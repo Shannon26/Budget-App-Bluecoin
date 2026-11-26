@@ -54,6 +54,20 @@ export interface LedgerEntry {
   transfer_id: number | null;
 }
 
+export interface DailyTotal {
+  date: string;
+  income_minor: number;
+  expense_minor: number;
+  transfer_minor: number;
+}
+
+export interface LedgerPage {
+  entries: LedgerEntry[];
+  daily_totals: DailyTotal[];
+  total_count: number;
+  next_offset: number | null;
+}
+
 export interface FilterDefinition {
   search?: string | null;
   date_from?: string | null;

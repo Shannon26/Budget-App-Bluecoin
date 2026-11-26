@@ -3,6 +3,7 @@ import { api } from "./api";
 import { formatMinor, parseMinorUnits } from "./money";
 import type {
   BudgetState,
+  DailyTotal,
   FilterDefinition,
   LedgerEntry,
   TransactionKind,
@@ -318,50 +319,68 @@ export default function Ledger({
   const [draft, setDraft] = useState<DraftFilter>(emptyDraft);
   const [applied, setApplied] = useState<FilterDefinition>({});
   const [entries, setEntries] = useState<LedgerEntry[]>(data.entries);
+  const [dailyTotals, setDailyTotals] = useState<DailyTotal[]>([]);
+  const [totalCount, setTotalCount] = useState(data.entries.length);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [selected, setSelected] = useState<LedgerEntry | null>(null);
   const [editing, setEditing] = useState<LedgerEntry | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LedgerEntry | null>(null);
   const [filterName, setFilterName] = useState("");
   const [selectedFilterId, setSelectedFilterId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const loadPage = useCallback(async (offset = 0, append = false) => {
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const result = historyAccountId
-        ? await api.accountHistory(historyAccountId)
-        : await api.ledger(applied);
-      setEntries(result);
+        ? await api.accountHistory(historyAccountId, offset)
+        : await api.ledger(applied, offset);
+      setEntries((current) => {
+        const merged = append ? [...current, ...result.entries] : result.entries;
+        return [...new Map(merged.map((entry) => [`${entry.kind}-${entry.id}`, entry])).values()];
+      });
+      setDailyTotals(result.daily_totals);
+      setTotalCount(result.total_count);
+      setNextOffset(result.next_offset);
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : "Could not load ledger", true);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, [applied, historyAccountId, onMessage]);
 
   useEffect(() => {
-    void load();
-  }, [load, data.entries]);
+    void loadPage();
+  }, [loadPage, data.entries]);
 
   const groups = useMemo(() => {
+    const totalsByDate = new Map(dailyTotals.map((total) => [total.date, total]));
     const map = new Map<
       string,
       { date: string; entries: LedgerEntry[]; income: number; expense: number; transfer: number }
     >();
     for (const entry of entries) {
       const date = entry.occurred_at.slice(0, 10);
-      const group = map.get(date) ?? { date, entries: [], income: 0, expense: 0, transfer: 0 };
+      const total = totalsByDate.get(date);
+      const group = map.get(date) ?? {
+        date,
+        entries: [],
+        income: total?.income_minor ?? 0,
+        expense: total?.expense_minor ?? 0,
+        transfer: total?.transfer_minor ?? 0,
+      };
       group.entries.push(entry);
-      if (entry.kind === "income") group.income += entry.amount_minor;
-      if (entry.kind === "expense") group.expense += entry.amount_minor;
-      if (entry.kind === "transfer" || entry.kind === "transfer_in" || entry.kind === "transfer_out") {
-        group.transfer += entry.amount_minor;
-      }
       map.set(date, group);
     }
     return [...map.values()].sort((left, right) => right.date.localeCompare(left.date));
-  }, [entries]);
+  }, [entries, dailyTotals]);
 
   function applyFilters() {
     const min = draft.amount_min ? parseMinorUnits(draft.amount_min) : null;
@@ -716,6 +735,21 @@ export default function Ledger({
         </div>
       )}
 
+      {nextOffset !== null && (
+        <div className="load-more">
+          <span>Showing {entries.length} of {totalCount} matching entries</span>
+          <button
+            className="secondary-button"
+            data-testid="load-more"
+            type="button"
+            disabled={loadingMore}
+            onClick={() => void loadPage(nextOffset, true)}
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
+      )}
+
       {selected && (
         <div className="modal-backdrop" role="presentation">
           <section className="modal-card detail-card" role="dialog" aria-modal="true" aria-label="Entry details">
@@ -771,7 +805,7 @@ export default function Ledger({
           onClose={() => setEditing(null)}
           onSaved={async () => {
             await refresh();
-            await load();
+            await loadPage();
             setSelected(null);
           }}
         />

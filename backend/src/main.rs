@@ -44,8 +44,14 @@ async fn create_account(
 async fn account_history(
     State(state): State<AppState>,
     Path(account_id): Path<i64>,
-) -> AppResult<Json<Vec<LedgerEntry>>> {
-    Ok(Json(state.store.account_history(account_id).await?))
+    Query(page): Query<LedgerPageQuery>,
+) -> AppResult<Json<LedgerPage>> {
+    Ok(Json(
+        state
+            .store
+            .account_history(account_id, page.limit, page.offset)
+            .await?,
+    ))
 }
 
 async fn create_transaction(
@@ -156,9 +162,16 @@ async fn reconcile_transfer(
 
 async fn ledger(
     State(state): State<AppState>,
-    Query(filter): Query<FilterDefinition>,
-) -> AppResult<Json<Vec<LedgerEntry>>> {
-    Ok(Json(state.store.ledger(filter).await?))
+    Query(page): Query<LedgerPageQuery>,
+) -> AppResult<Json<LedgerPage>> {
+    let limit = page.limit;
+    let offset = page.offset;
+    Ok(Json(
+        state
+            .store
+            .ledger(page.into_filter(), limit, offset)
+            .await?,
+    ))
 }
 
 async fn list_categories(State(state): State<AppState>) -> AppResult<Json<Vec<Category>>> {

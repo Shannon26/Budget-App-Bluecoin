@@ -64,6 +64,10 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form) return;
+    if (form.id && hasChildren && form.parent_id !== originalParentId) {
+      setError("Move this category’s subcategories first.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -105,6 +109,19 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
   }
 
   const totals = new Map(data.category_totals.map((total) => [total.category_id, total]));
+  const editingCategory = form?.id
+    ? data.categories.find((category) => category.id === form.id)
+    : undefined;
+  const hasChildren = form?.id
+    ? data.categories.some((category) => category.parent_id === form.id)
+    : false;
+  const originalParentId = editingCategory?.parent_id
+    ? String(editingCategory.parent_id)
+    : "";
+  const selectedParent = form?.parent_id
+    ? data.categories.find((category) => category.id === Number(form.parent_id))
+    : undefined;
+  const legacyThirdLevel = Boolean(selectedParent?.parent_id);
 
   return (
     <section className="category-section">
@@ -196,6 +213,12 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
               </button>
             </div>
             {error && <div className="message message-error">{error}</div>}
+            {legacyThirdLevel && (
+              <div className="message message-error hierarchy-warning" role="alert">
+                This category is already part of a third-level branch. Its data is preserved.
+                Choose a valid top-level parent or No parent to return it to two levels.
+              </div>
+            )}
             <form className="stack-form" onSubmit={submit}>
               <label>
                 Name
@@ -226,6 +249,7 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
                     data-testid="category-parent"
                     value={form.parent_id}
                     onChange={(event) => setForm({ ...form, parent_id: event.target.value })}
+                    disabled={hasChildren}
                   >
                     <option value="">No parent</option>
                     {data.categories
@@ -242,6 +266,11 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
                         </option>
                       ))}
                   </select>
+                  {hasChildren && (
+                    <small className="field-hint" data-testid="category-hierarchy-message">
+                      Move this category’s subcategories first.
+                    </small>
+                  )}
                 </label>
               </div>
               <div className="form-row">

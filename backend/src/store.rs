@@ -2,6 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::Utc;
 use sqlx::{Executor, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
+use std::collections::BTreeMap;
 
 #[derive(Clone)]
 pub struct Store {
@@ -586,7 +587,60 @@ impl Store {
         }
     }
 
-    pub async fn ledger(&self, filter: FilterDefinition) -> AppResult<Vec<LedgerEntry>> {
+    fn build_page(
+        mut entries: Vec<LedgerEntry>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> LedgerPage {
+        entries.sort_by(|left, right| {
+            right
+                .occurred_at
+                .cmp(&left.occurred_at)
+                .then(right.id.cmp(&left.id))
+                .then(left.kind.cmp(&right.kind))
+        });
+        let total_count = entries.len();
+        let mut totals = BTreeMap::<String, DailyTotal>::new();
+        for entry in &entries {
+            let date: String = entry.occurred_at.chars().take(10).collect();
+            let total = totals.entry(date).or_insert(DailyTotal {
+                date: entry.occurred_at.chars().take(10).collect(),
+                income_minor: 0,
+                expense_minor: 0,
+                transfer_minor: 0,
+            });
+            match entry.kind.as_str() {
+                "income" => total.income_minor += entry.amount_minor,
+                "expense" => total.expense_minor += entry.amount_minor,
+                "transfer" | "transfer_in" | "transfer_out" => {
+                    total.transfer_minor += entry.amount_minor
+                }
+                _ => {}
+            }
+        }
+        let limit = limit.unwrap_or(200).clamp(1, 200);
+        let offset = offset.unwrap_or(0);
+        let end = offset.saturating_add(limit).min(total_count);
+        let paged = if offset < total_count {
+            entries[offset..end].to_vec()
+        } else {
+            Vec::new()
+        };
+        let next_offset = (end < total_count).then_some(end);
+        LedgerPage {
+            entries: paged,
+            daily_totals: totals.into_values().collect(),
+            total_count,
+            next_offset,
+        }
+    }
+
+    pub async fn ledger(
+        &self,
+        filter: FilterDefinition,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> AppResult<LedgerPage> {
         Self::validate_filter(&filter)?;
         let mut entries_query = QueryBuilder::<Sqlite>::new(
             "SELECT e.id, e.kind, e.name, e.note, e.account_id, a.name AS account_name,
@@ -625,17 +679,15 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         entries.extend(transfers);
-        entries.sort_by(|left, right| {
-            right
-                .occurred_at
-                .cmp(&left.occurred_at)
-                .then(right.id.cmp(&left.id))
-        });
-        entries.truncate(200);
-        Ok(entries)
+        Ok(Self::build_page(entries, limit, offset))
     }
 
-    pub async fn account_history(&self, account_id: i64) -> AppResult<Vec<LedgerEntry>> {
+    pub async fn account_history(
+        &self,
+        account_id: i64,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> AppResult<LedgerPage> {
         Store::load_account(&self.pool, account_id).await?;
         let mut entries_query = QueryBuilder::<Sqlite>::new(
             "SELECT e.id, e.kind, e.name, e.note, e.account_id, a.name AS account_name,
@@ -680,14 +732,7 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         entries.extend(transfers);
-        entries.sort_by(|left, right| {
-            right
-                .occurred_at
-                .cmp(&left.occurred_at)
-                .then(right.id.cmp(&left.id))
-        });
-        entries.truncate(200);
-        Ok(entries)
+        Ok(Self::build_page(entries, limit, offset))
     }
 
     pub async fn transaction_detail(&self, id: i64) -> AppResult<LedgerEntry> {
@@ -770,8 +815,8 @@ impl Store {
                 "a category cannot be its own parent".to_string(),
             ));
         }
-        let parent = sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT kind, archived_at FROM categories WHERE id = ?",
+        let parent = sqlx::query_as::<_, (String, Option<String>, Option<i64>)>(
+            "SELECT kind, archived_at, parent_id FROM categories WHERE id = ?",
         )
         .bind(parent_id)
         .fetch_optional(&self.pool)
@@ -785,6 +830,11 @@ impl Store {
         if parent.1.is_some() {
             return Err(AppError::BadRequest(
                 "archived categories cannot be parents".to_string(),
+            ));
+        }
+        if parent.2.is_some() {
+            return Err(AppError::BadRequest(
+                "subcategories can only be created under top-level categories".to_string(),
             ));
         }
         if let Some(current_id) = current_id {
@@ -903,6 +953,16 @@ impl Store {
                 "archived categories cannot be edited".to_string(),
             ));
         }
+        let children =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM categories WHERE parent_id = ?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
+        if children > 0 && current.parent_id != request.parent_id {
+            return Err(AppError::BadRequest(
+                "Move this category’s subcategories first.".to_string(),
+            ));
+        }
         if current.kind != request.kind {
             let references = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM entries WHERE category_id = ? AND kind = ?",
@@ -911,11 +971,6 @@ impl Store {
             .bind(&current.kind)
             .fetch_one(&self.pool)
             .await?;
-            let children =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM categories WHERE parent_id = ?")
-                    .bind(id)
-                    .fetch_one(&self.pool)
-                    .await?;
             if references > 0 || children > 0 {
                 return Err(AppError::BadRequest(
                     "category type cannot change after it has entries or child categories"
@@ -1109,7 +1164,10 @@ impl Store {
         let categories = self.categories().await?;
         let category_totals = self.category_totals().await?;
         let saved_filters = self.saved_filters().await?;
-        let entries = self.ledger(FilterDefinition::default()).await?;
+        let entries = self
+            .ledger(FilterDefinition::default(), None, None)
+            .await?
+            .entries;
 
         Ok(StateResponse {
             accounts,

@@ -17,6 +17,57 @@ async function openEntry(page: import("@playwright/test").Page, kind: string, na
   await expect(page.getByRole("dialog", { name: "Entry details" })).toBeVisible();
 }
 
+test("category editor keeps new hierarchy changes at two levels", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("nav-categories").click();
+
+  const foodRow = page.locator(".category-row:not(.category-child)").filter({ hasText: "Food & Drink" });
+  await foodRow.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.getByTestId("category-parent")).toBeDisabled();
+  await expect(page.getByTestId("category-hierarchy-message")).toHaveText(
+    "Move this category’s subcategories first.",
+  );
+  await page.getByRole("button", { name: "Close category editor" }).click();
+
+  await page.getByTestId("new-category").click();
+  const parentOptions = await page.getByTestId("category-parent").locator("option").allTextContents();
+  expect(parentOptions).toContain("Food & Drink");
+  expect(parentOptions).toContain("Shopping");
+  expect(parentOptions).not.toContain("Dining Out");
+  await page.getByRole("button", { name: "Close category editor" }).click();
+
+  const diningRow = page.locator(".category-row.category-child").filter({ hasText: "Dining Out" });
+  await diningRow.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.getByTestId("category-parent")).toBeEnabled();
+  await page.getByTestId("category-parent").selectOption({ label: "Shopping" });
+  await page.getByTestId("save-category").click();
+  await expect(
+    page.locator(".category-row.category-child").filter({ hasText: "Dining Out" }),
+  ).toContainText("Shopping /");
+
+  await page
+    .locator(".category-row.category-child")
+    .filter({ hasText: "Dining Out" })
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  await page.getByTestId("category-parent").selectOption("");
+  await page.getByTestId("save-category").click();
+  await expect(
+    page.locator(".category-row:not(.category-child)").filter({ hasText: "Dining Out" }),
+  ).toHaveCount(1);
+
+  await page
+    .locator(".category-row:not(.category-child)")
+    .filter({ hasText: "Dining Out" })
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  await page.getByTestId("category-parent").selectOption({ label: "Food & Drink" });
+  await page.getByTestId("save-category").click();
+  await expect(
+    page.locator(".category-row.category-child").filter({ hasText: "Dining Out" }),
+  ).toContainText("Food & Drink /");
+});
+
 test("milestone 2 category and transaction management flow", async ({ page, request }) => {
   await page.goto("/");
   await createAccount(page, "E2E Checking", "5000");
@@ -147,4 +198,67 @@ test("milestone 2 category and transaction management flow", async ({ page, requ
   const state = await (await request.get("/api/state")).json();
   expect(state.category_totals.find((total: { category_id: number }) => total.category_id !== null && total.name === "Dining Out").total_minor).toBe(30000);
   expect(state.category_totals.find((total: { category_id: null }) => total.category_id === null && total.name === "Uncategorized").total_minor).toBe(5000);
+});
+
+test("ledger and account history load older same-day entries with complete daily totals", async ({ page, request }) => {
+  const accountResponse = await request.post("/api/accounts", {
+    data: { name: "Pagination account", currency: "INR", opening_balance_minor: 100000 },
+  });
+  expect(accountResponse.ok()).toBeTruthy();
+  const accountId = (await accountResponse.json()).id as number;
+
+  for (let start = 1; start <= 201; start += 10) {
+    const batch = [];
+    for (let value = start; value < Math.min(start + 10, 202); value += 1) {
+      batch.push(
+        request.post("/api/transactions", {
+          data: {
+            kind: "expense",
+            account_id: accountId,
+            amount_minor: 100,
+            name: `Pagination expense ${value}`,
+            occurred_at: "2026-11-20T12:00:00",
+          },
+        }),
+      );
+    }
+    const responses = await Promise.all(batch);
+    for (const response of responses) expect(response.ok()).toBeTruthy();
+  }
+
+  await page.goto("/");
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("ledger-search").fill("Pagination expense");
+  await page.getByTestId("filter-account").selectOption(String(accountId));
+  await page.getByTestId("apply-filters").click();
+
+  const rows = page.locator('[data-testid^="ledger-row-expense-"]');
+  const day = page.locator(".ledger-day").filter({ hasText: "2026-11-20" });
+  await expect(day.locator(".ledger-day-header")).toContainText("Expense ₹201.00");
+  await expect(rows).toHaveCount(200);
+  await expect(page.locator(".load-more")).toContainText("Showing 200 of 201");
+  await page.getByTestId("load-more").click();
+  await expect(rows).toHaveCount(201);
+  await expect(page.getByTestId("load-more")).toHaveCount(0);
+
+  const rowIds = await rows.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-testid")),
+  );
+  expect(new Set(rowIds).size).toBe(201);
+  const rowText = await rows.allTextContents();
+  for (let value = 1; value <= 201; value += 1) {
+    expect(rowText.some((text) => text.includes(`Pagination expense ${value}`))).toBeTruthy();
+  }
+
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId(`account-history-${accountId}`).click();
+  const historyRows = page.locator('[data-testid^="ledger-row-expense-"]');
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹201.00");
+  await expect(historyRows).toHaveCount(200);
+  await page.getByTestId("load-more").click();
+  await expect(historyRows).toHaveCount(201);
+  const historyIds = await historyRows.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-testid")),
+  );
+  expect(new Set(historyIds).size).toBe(201);
 });

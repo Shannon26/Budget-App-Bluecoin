@@ -52,9 +52,13 @@ Stop either process with `Ctrl+C`.
 ## Milestone 2 behavior
 
 - Comprehensive editable income/expense catalog with meaningful two-level groupings.
+- New hierarchy changes are limited to category → subcategory; parents must be active top-level categories of the same type.
+- Categories with subcategories cannot be moved until those subcategories are moved first.
 - Optional categories with **Uncategorized** fallback; transfers remain uncategorized.
 - Referenced categories archive instead of disappearing, preserving history and totals while leaving new-entry pickers.
 - Date-grouped ledger with daily income, expense, and transfer totals.
+- Stable 200-entry pages with **Load more** for older matching entries in both the main ledger and account history.
+- Daily totals cover all matching transactions for that day, including entries not yet loaded.
 - Search by name/note and filters for date, account, category, reconciliation status, amount range, and uncategorized entries.
 - Named filters persist in SQLite and can be reopened after reload.
 - Detail view with edit, duplicate, manual Reconciled toggle, and explicit permanent-delete confirmation.
@@ -75,6 +79,7 @@ The repeatable browser test uses a clean database and verifies:
 8. Archive Dining Out and verify existing history remains while the new-entry picker hides it.
 9. Transfer ₹500, verify one main-ledger row and correct account-history direction, edit it to ₹600, then delete it.
 10. Verify both accounts update together and income/expense totals remain unchanged.
+11. With 201 same-day ₹1 expenses, verify the first page shows a ₹201 daily total and Load more reaches all 201 entries without gaps or duplicates.
 
 ## Tests and production build
 
@@ -114,8 +119,10 @@ The backend suite covers:
 - edit/duplicate/permanent delete balance updates;
 - referenced-category archiving and historical preservation;
 - editing an existing entry whose category is archived;
-- category CRUD, duplicate prevention, and cycle prevention;
+- category CRUD, duplicate prevention, cycle prevention, and two-level hierarchy enforcement;
+- moving childless categories without changing transaction assignments;
 - search/date/account/category/status/amount filters;
+- stable ledger/account-history pagination and full-day totals for the 201-entry regression;
 - saved-filter persistence and reconciliation filtering;
 - one combined transfer row and relevant account-history sides;
 - transfer edit/delete updating both accounts without changing totals;
@@ -134,8 +141,8 @@ All amounts are integer minor units.
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/state` | Accounts, totals, categories, category totals, saved filters, recent combined ledger |
 | `POST` | `/api/accounts` | Create an INR account with opening balance |
-| `GET` | `/api/accounts/:id/history` | Account-specific ledger with relevant transfer side |
-| `GET` | `/api/ledger` | Filtered combined ledger |
+| `GET` | `/api/accounts/:id/history` | Paginated account-specific ledger with relevant transfer side and full-day totals |
+| `GET` | `/api/ledger` | Paginated filtered combined ledger with full-day totals; supports `limit` and `offset` |
 | `POST` | `/api/transactions` | Create income/expense |
 | `GET/PUT/DELETE` | `/api/transactions/:id` | Detail/edit/permanent delete |
 | `POST` | `/api/transactions/:id/duplicate` | Duplicate transaction |
@@ -189,11 +196,11 @@ Restart with the startup command above.
 
 Verified on 2026-11-26:
 
-- `cargo test`: **15 passed; 0 failed**
+- `cargo test`: **17 passed; 0 failed**
 - `npm test`: **7 passed; 0 failed**
 - `npm run build`: **passed**
 - `npm audit`: **0 vulnerabilities**
-- `./frontend/scripts/e2e.sh`: **1 passed** — full category, ledger, saved-filter, archive, Uncategorized, transfer edit/delete, account-history, and reload flow
+- `./frontend/scripts/e2e.sh`: **3 passed** — hierarchy editor rules, full Milestone 2 flow, and the 201-entry Load more regression
 - Manual Milestone-1 → Milestone-2 migration check: balances, totals, and transfer legs preserved
 
 ## Later milestones / explicit deferrals

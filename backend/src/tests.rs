@@ -480,8 +480,8 @@ async fn saved_filters_persist_and_reconciliation_is_filterable() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body.as_array().unwrap().len(), 1);
-    assert_eq!(body[0]["id"], reconciled);
+    assert_eq!(body["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(body["entries"][0]["id"], reconciled);
 }
 
 #[tokio::test]
@@ -506,7 +506,7 @@ async fn main_ledger_shows_one_transfer_and_account_histories_show_relevant_side
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body[0]["kind"], "transfer_out");
+    assert_eq!(body["entries"][0]["kind"], "transfer_out");
     let (status, body) = send_json(
         &app,
         "GET",
@@ -515,7 +515,7 @@ async fn main_ledger_shows_one_transfer_and_account_histories_show_relevant_side
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body[0]["kind"], "transfer_in");
+    assert_eq!(body["entries"][0]["kind"], "transfer_in");
 
     let (status, body) = send_json(
         &app,
@@ -594,7 +594,7 @@ async fn ledger_filters_cover_search_date_account_category_status_and_amount() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let rows = body.as_array().unwrap();
+    let rows = body["entries"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], target);
 }
@@ -669,6 +669,131 @@ async fn category_crud_prevents_cycles_and_deletes_unreferenced_categories() {
 }
 
 #[tokio::test]
+async fn category_hierarchy_stays_two_levels_and_moves_preserve_assignments() {
+    let (app, _pool, _directory) = setup().await;
+    let food = category_id(&app, "expense", "Food & Drink").await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+    let seeded_dining = category_id(&app, "expense", "Dining Out").await;
+
+    // Recreate the exact Food → Dining Out branch through the API.
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/categories/{seeded_dining}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], false);
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/categories",
+        json!({
+            "name": "Dining Out",
+            "kind": "expense",
+            "parent_id": food,
+            "color": "#b65d35",
+            "icon": "🍴",
+            "sort_order": 11
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let dining = body["id"].as_i64().unwrap();
+    assert_eq!(body["parent_id"], food);
+
+    // A third level is rejected.
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/categories",
+        json!({
+            "name": "Invalid third level",
+            "kind": "expense",
+            "parent_id": dining,
+            "color": "#b65d35",
+            "icon": "×",
+            "sort_order": 12
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"],
+        "subcategories can only be created under top-level categories"
+    );
+
+    // Food already has subcategories, so it cannot be moved beneath Shopping.
+    let before = state(&app).await;
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/categories/{food}"),
+        json!({
+            "name": "Food & Drink",
+            "kind": "expense",
+            "parent_id": shopping,
+            "color": "#b65d35",
+            "icon": "🍽",
+            "sort_order": 10
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "Move this category’s subcategories first.");
+    let after = state(&app).await;
+    assert_eq!(after["categories"], before["categories"]);
+
+    // Dining Out has no children, so it can move under another valid top-level category.
+    let checking = create_account(&app, "Checking", 100_000).await;
+    let expense = create_entry(&app, "expense", checking, 25_000, "Dinner", Some(dining)).await;
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/categories/{dining}"),
+        json!({
+            "name": "Dining Out",
+            "kind": "expense",
+            "parent_id": shopping,
+            "color": "#b65d35",
+            "icon": "🍴",
+            "sort_order": 11
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["parent_id"], shopping);
+    let current = state(&app).await;
+    assert_eq!(current["entries"][0]["id"], expense);
+    assert_eq!(current["entries"][0]["category_id"], dining);
+    assert_eq!(current["entries"][0]["category_name"], "Dining Out");
+    assert!(current["category_totals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|total| total["category_id"] == dining && total["total_minor"] == 25_000));
+
+    // A childless category can also become top-level.
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/categories/{dining}"),
+        json!({
+            "name": "Dining Out",
+            "kind": "expense",
+            "parent_id": null,
+            "color": "#b65d35",
+            "icon": "🍴",
+            "sort_order": 11
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["parent_id"], Value::Null);
+}
+
+#[tokio::test]
 async fn editing_an_entry_with_an_archived_category_preserves_the_assignment() {
     let (app, _pool, _directory) = setup().await;
     let checking = create_account(&app, "Checking", 100_000).await;
@@ -740,4 +865,73 @@ async fn transfer_edit_rolls_back_both_legs_when_one_side_fails() {
     let after = state(&app).await;
     assert_eq!(after["accounts"], before["accounts"]);
     assert_eq!(after["entries"][0]["amount_minor"], 25_000);
+}
+
+#[tokio::test]
+async fn ledger_pagination_has_stable_order_and_full_day_totals_for_201_entries() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Pagination account", 100_000).await;
+    sqlx::query(
+        "WITH RECURSIVE numbers(value) AS (
+             SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 201
+         )
+         INSERT INTO entries
+             (kind, account_id, amount_minor, name, category_id, reconciled, note, occurred_at, created_at, transfer_id)
+         SELECT 'expense', ?, 100, 'Pagination expense ' || value, NULL, 0, '',
+                '2026-11-20T12:00:00', '2026-11-20T12:00:00Z', NULL
+         FROM numbers",
+    )
+    .bind(checking)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, first) = send_json(
+        &app,
+        "GET",
+        &format!("/api/ledger?account_id={checking}&search=Pagination&limit=200&offset=0"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["total_count"], 201);
+    assert_eq!(first["entries"].as_array().unwrap().len(), 200);
+    assert_eq!(first["next_offset"], 200);
+    assert_eq!(first["daily_totals"].as_array().unwrap().len(), 1);
+    assert_eq!(first["daily_totals"][0]["date"], "2026-11-20");
+    assert_eq!(first["daily_totals"][0]["expense_minor"], 20_100);
+    assert_eq!(first["daily_totals"][0]["income_minor"], 0);
+    assert_eq!(first["daily_totals"][0]["transfer_minor"], 0);
+
+    let (status, second) = send_json(
+        &app,
+        "GET",
+        &format!("/api/ledger?account_id={checking}&search=Pagination&limit=200&offset=200"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(second["next_offset"], Value::Null);
+
+    let mut ids = Vec::new();
+    for page in [&first, &second] {
+        for entry in page["entries"].as_array().unwrap() {
+            ids.push(entry["id"].as_i64().unwrap());
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 201);
+
+    let (status, history) = send_json(
+        &app,
+        "GET",
+        &format!("/api/accounts/{checking}/history?limit=200&offset=0"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert_eq!(history["total_count"], 201);
+    assert_eq!(history["daily_totals"][0]["expense_minor"], 20_100);
 }

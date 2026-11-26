@@ -3,6 +3,7 @@ import type {
   Category,
   FilterDefinition,
   LedgerEntry,
+  LedgerPage,
   SavedFilter,
   TransactionKind,
 } from "./types";
@@ -40,6 +41,11 @@ function filterQuery(filter: FilterDefinition): string {
   return query ? `?${query}` : "";
 }
 
+function ledgerPath(filter: FilterDefinition, offset: number): string {
+  const query = filterQuery(filter);
+  return `/ledger${query}${query ? "&" : "?"}limit=200&offset=${offset}`;
+}
+
 export const api = {
   state: () => request<BudgetState>("/state"),
   createAccount: (input: {
@@ -51,8 +57,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  accountHistory: (accountId: number) =>
-    request<LedgerEntry[]>(`/accounts/${accountId}/history`),
+  accountHistory: (accountId: number, offset = 0) =>
+    request<LedgerPage>(`/accounts/${accountId}/history?limit=200&offset=${offset}`),
   createTransaction: (input: {
     kind: TransactionKind;
     account_id: number;
@@ -131,8 +137,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ reconciled }),
     }),
-  ledger: (filter: FilterDefinition) =>
-    request<LedgerEntry[]>(`/ledger${filterQuery(filter)}`),
+  ledger: (filter: FilterDefinition, offset = 0) =>
+    request<LedgerPage>(ledgerPath(filter, offset)),
   categories: () => request<Category[]>("/categories"),
   createCategory: (input: {
     name: string;
