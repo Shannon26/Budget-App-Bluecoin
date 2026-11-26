@@ -129,7 +129,7 @@ The backend suite covers:
 - stable ledger/account-history pagination and full-day totals for the 201-entry regression;
 - CSV export of all 201 filtered rows despite `limit`/`offset`, exact INR formatting, quoting, formula protection, archived category names, Uncategorized fallback, and one combined transfer row;
 - transaction/transfer date validation with no writes on rejection, plus blank CSV dates for invalid legacy timestamps;
-- monthly budget validation, parent/child rollups, independent month limits, overall de-duplication, Uncategorized inclusion, archive history, month/leap-day boundaries, and edit/delete recalculation;
+- monthly budget validation, parent/child rollups and limit invariants, category-move checks, budget-aware archiving/type changes, overall de-duplication, Uncategorized inclusion, invalid-date warnings, month/leap-day boundaries, and edit/delete recalculation;
 - saved-filter persistence and reconciliation filtering;
 - one combined transfer row and relevant account-history sides;
 - transfer edit/delete updating both accounts without changing totals;
@@ -188,11 +188,16 @@ Example transaction:
 3. Click **Set limit** on an expense category or subcategory, enter a positive INR amount, and save. **Edit limit** changes it; **Remove** deletes only that month's limit.
 4. Each row shows its limit, spending, remaining or over amount, percentage used, and a progress bar.
 
+While a month is loading, its figures and edit/remove controls are unavailable. Late responses for a previously selected month, including save/remove responses, cannot replace the selected month's figures.
+
 Budget rules:
 
 - Limits are stored independently per `(category, YYYY-MM)` in integer paise and are not copied into future months.
 - A parent row's spending includes expenses assigned directly to the parent plus expenses assigned to all of its subcategories. Each subcategory keeps its own independent limit.
+- A subcategory limit cannot exceed its parent's limit for the same month, and a parent limit cannot be lowered below an existing child limit. Moving a subcategory under a new parent checks every overlapping budget month.
 - **Monthly spending** sums each expense exactly once. It is not the sum of parent and child rows. Uncategorized expenses are included; income and transfers are excluded.
+- Expenses with invalid stored dates cannot be assigned to a month. Budgets excludes them from monthly totals and displays a warning with their count and amount so they can be corrected in Ledger.
+- Categories with saved budgets archive instead of being permanently deleted, and their type cannot be changed while any budget exists.
 - Archived categories remain visible with their historical limits and spending. Existing archived limits can be edited or removed, but a new limit cannot be added to an archived category.
 - Month boundaries use validated calendar dates and a half-open range, so the last instant of one month and the first of the next are not double-counted. Transaction edits, deletions, and category hierarchy changes are reflected when budgets are loaded.
 - Progress is capped visually at 100%, while the percentage and **over** amount continue to show the true excess.
@@ -271,11 +276,11 @@ Restart with the startup command above.
 
 Verified on 2026-11-26:
 
-- `cargo test`: **29 passed; 0 failed**
+- `cargo test`: **31 passed; 0 failed**
 - `npm test`: **7 passed; 0 failed**
 - `npm run build`: **passed**
 - `npm audit`: **0 vulnerabilities**
-- `./frontend/scripts/e2e.sh`: **5 passed** — hierarchy editor rules, full Milestone 2 flow, CSV regressions, and monthly budget persistence/rollup/archive behavior
+- `./frontend/scripts/e2e.sh`: **6 passed** — hierarchy editor rules, full Milestone 2 flow, CSV regressions, monthly budget persistence/rollup/archive behavior, and stale GET/PUT/DELETE month-response regressions
 - Bluecoins runtime export: **628 demo rows** observed through ADB; workflow and fields recorded in [`docs/bluecoins-walkthrough.md`](docs/bluecoins-walkthrough.md)
 - Bluecoins runtime budget table: parent/child limits, spent, remaining, over-budget, progress, and Last Month switching observed through ADB
 - Manual Milestone-1 → Milestone-2 migration check: balances, totals, and transfer legs preserved

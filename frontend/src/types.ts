@@ -56,6 +56,8 @@ export interface MonthlyCategoryBudgets {
   total_spent_minor: number;
   uncategorized_spent_minor: number;
   expense_count: number;
+  invalid_date_expense_count: number;
+  invalid_date_spent_minor: number;
   categories: CategoryBudget[];
 }
 

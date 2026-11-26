@@ -193,6 +193,8 @@ pub struct MonthlyCategoryBudgets {
     pub total_spent_minor: i64,
     pub uncategorized_spent_minor: i64,
     pub expense_count: i64,
+    pub invalid_date_expense_count: i64,
+    pub invalid_date_spent_minor: i64,
     pub categories: Vec<CategoryBudget>,
 }
 

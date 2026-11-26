@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import { formatMinor, localDateValue, parseMinorUnits } from "./money";
 import type { CategoryBudget, MonthlyCategoryBudgets } from "./types";
@@ -43,17 +43,23 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
   const [month, setMonth] = useState(() => localDateValue().slice(0, 7));
   const [result, setResult] = useState<MonthlyCategoryBudgets | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingMonth, setSavingMonth] = useState<string | null>(null);
   const [editor, setEditor] = useState<{ category: CategoryBudget; amount: string } | null>(null);
+  const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++requestSequence.current;
     setLoading(true);
     try {
-      setResult(await api.categoryBudgets(month));
+      const next = await api.categoryBudgets(month);
+      if (request !== requestSequence.current || next.month !== month) return;
+      setResult(next);
     } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "Could not load budgets", true);
+      if (request === requestSequence.current) {
+        onMessage(reason instanceof Error ? reason.message : "Could not load budgets", true);
+      }
     } finally {
-      setLoading(false);
+      if (request === requestSequence.current) setLoading(false);
     }
   }, [month, onMessage]);
 
@@ -62,14 +68,27 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
     void load();
   }, [load]);
 
+  function selectMonth(nextMonth: string) {
+    if (!nextMonth || nextMonth === month) return;
+    requestSequence.current += 1;
+    setResult(null);
+    setLoading(true);
+    setEditor(null);
+    setMonth(nextMonth);
+  }
+
+  const loaded = result?.month === month && !loading;
+  const visibleResult = result?.month === month ? result : null;
+  const savingThisMonth = savingMonth === month;
+
   const parentIds = useMemo(
     () =>
       new Set(
-        (result?.categories ?? [])
+        (visibleResult?.categories ?? [])
           .map((category) => category.parent_id)
           .filter((parentId): parentId is number => parentId !== null),
       ),
-    [result],
+    [visibleResult],
   );
 
   function openEditor(category: CategoryBudget) {
@@ -87,30 +106,44 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
       onMessage("Enter a valid monthly limit greater than zero", true);
       return;
     }
-    setSaving(true);
+    const requestMonth = month;
+    const request = requestSequence.current;
+    setSavingMonth(requestMonth);
     try {
-      setResult(
-        await api.setCategoryBudget(editor.category.category_id, month, amountMinor),
+      const next = await api.setCategoryBudget(
+        editor.category.category_id,
+        requestMonth,
+        amountMinor,
       );
+      if (request !== requestSequence.current || next.month !== requestMonth) return;
+      setResult(next);
       setEditor(null);
       onMessage("Monthly category budget saved.");
     } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "Could not save budget", true);
+      if (request === requestSequence.current) {
+        onMessage(reason instanceof Error ? reason.message : "Could not save budget", true);
+      }
     } finally {
-      setSaving(false);
+      setSavingMonth((current) => (current === requestMonth ? null : current));
     }
   }
 
   async function removeLimit(category: CategoryBudget) {
-    setSaving(true);
+    const requestMonth = month;
+    const request = requestSequence.current;
+    setSavingMonth(requestMonth);
     try {
-      setResult(await api.removeCategoryBudget(category.category_id, month));
+      const next = await api.removeCategoryBudget(category.category_id, requestMonth);
+      if (request !== requestSequence.current || next.month !== requestMonth) return;
+      setResult(next);
       setEditor(null);
       onMessage("Monthly category budget removed.");
     } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "Could not remove budget", true);
+      if (request === requestSequence.current) {
+        onMessage(reason instanceof Error ? reason.message : "Could not remove budget", true);
+      }
     } finally {
-      setSaving(false);
+      setSavingMonth((current) => (current === requestMonth ? null : current));
     }
   }
 
@@ -126,7 +159,7 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
             className="secondary-button"
             type="button"
             aria-label="Previous month"
-            onClick={() => setMonth((current) => shiftMonth(current, -1))}
+            onClick={() => selectMonth(shiftMonth(month, -1))}
           >
             ←
           </button>
@@ -136,14 +169,14 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
               data-testid="budget-month"
               type="month"
               value={month}
-              onChange={(event) => setMonth(event.target.value)}
+              onChange={(event) => selectMonth(event.target.value)}
             />
           </label>
           <button
             className="secondary-button"
             type="button"
             aria-label="Next month"
-            onClick={() => setMonth((current) => shiftMonth(current, 1))}
+            onClick={() => selectMonth(shiftMonth(month, 1))}
           >
             →
           </button>
@@ -154,18 +187,32 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
         <article className="budget-summary-card">
           <p>Monthly spending</p>
           <strong data-testid="budget-total-spent">
-            {formatMinor(result?.total_spent_minor ?? 0)}
+            {formatMinor(visibleResult?.total_spent_minor ?? 0)}
           </strong>
-          <span>{result?.expense_count ?? 0} expenses · income and transfers excluded</span>
+          <span>{visibleResult?.expense_count ?? 0} expenses · income and transfers excluded</span>
         </article>
         <article className="budget-summary-card">
           <p>Uncategorized spending</p>
           <strong data-testid="budget-uncategorized-spent">
-            {formatMinor(result?.uncategorized_spent_minor ?? 0)}
+            {formatMinor(visibleResult?.uncategorized_spent_minor ?? 0)}
           </strong>
           <span>Included in monthly spending, not in category rollups</span>
         </article>
       </div>
+
+      {visibleResult && visibleResult.invalid_date_expense_count > 0 && (
+        <div
+          className="message message-error budget-invalid-date-warning"
+          data-testid="budget-invalid-date-warning"
+          role="alert"
+        >
+          <span>!</span>
+          {visibleResult.invalid_date_expense_count} expense
+          {visibleResult.invalid_date_expense_count === 1 ? "" : "s"} with invalid dates (
+          {formatMinor(visibleResult.invalid_date_spent_minor)}) cannot be assigned to a month
+          and are excluded from monthly totals. Correct their dates in Ledger.
+        </div>
+      )}
 
       {editor && (
         <form className="budget-editor" onSubmit={saveLimit}>
@@ -196,15 +243,15 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
             className="primary-button compact-button"
             data-testid="save-budget-limit"
             type="submit"
-            disabled={saving}
+            disabled={savingThisMonth || !loaded}
           >
-            {saving ? "Saving…" : "Save limit"}
+            {savingThisMonth ? "Saving…" : "Save limit"}
           </button>
           <button
             className="secondary-button"
             data-testid="cancel-budget-limit"
             type="button"
-            disabled={saving}
+            disabled={savingThisMonth || !loaded}
             onClick={() => setEditor(null)}
           >
             Cancel
@@ -212,13 +259,15 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
         </form>
       )}
 
-      {loading && !result ? (
+      {loading ? (
         <div className="empty-state">Loading budgets…</div>
-      ) : !result || result.categories.length === 0 ? (
+      ) : !visibleResult ? (
+        <div className="empty-state">Could not load budgets.</div>
+      ) : visibleResult.categories.length === 0 ? (
         <div className="empty-state">No expense categories yet.</div>
       ) : (
         <div className="budget-list">
-          {result.categories.map((category) => {
+          {visibleResult.categories.map((category) => {
             const hasLimit = category.limit_minor !== null;
             const over = hasLimit && category.spent_minor > category.limit_minor!;
             const percent = progressPercent(category);
@@ -289,7 +338,9 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
                     className="secondary-button"
                     data-testid={`edit-budget-${category.category_id}`}
                     type="button"
-                    disabled={saving || (!hasLimit && category.archived_at !== null)}
+                    disabled={
+                      savingThisMonth || !loaded || (!hasLimit && category.archived_at !== null)
+                    }
                     onClick={() => openEditor(category)}
                   >
                     {hasLimit ? "Edit limit" : "Set limit"}
@@ -299,7 +350,7 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
                       className="text-button danger-text"
                       data-testid={`remove-budget-${category.category_id}`}
                       type="button"
-                      disabled={saving}
+                      disabled={savingThisMonth || !loaded}
                       onClick={() => void removeLimit(category)}
                     >
                       Remove

@@ -281,6 +281,37 @@ async fn category_id(app: &Router, kind: &str, name: &str) -> i64 {
         .unwrap()
 }
 
+async fn update_category_shape(
+    app: &Router,
+    category_id: i64,
+    kind: Option<&str>,
+    parent_id: Option<Option<i64>>,
+) -> (StatusCode, Value) {
+    let current = state(app).await;
+    let category = current["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["id"] == category_id)
+        .unwrap()
+        .clone();
+    let next_parent = parent_id.unwrap_or(category["parent_id"].as_i64());
+    send_json(
+        app,
+        "PUT",
+        &format!("/api/categories/{category_id}"),
+        json!({
+            "name": category["name"],
+            "kind": kind.unwrap_or(category["kind"].as_str().unwrap()),
+            "parent_id": next_parent,
+            "color": category["color"],
+            "icon": category["icon"],
+            "sort_order": category["sort_order"]
+        }),
+    )
+    .await
+}
+
 async fn create_entry(
     app: &Router,
     kind: &str,
@@ -1782,12 +1813,157 @@ async fn category_budgets_validate_inputs_and_keep_archived_history_visible() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["archived"], false);
+    assert_eq!(body["archived"], true);
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM category_budgets WHERE category_id = ?")
             .bind(temporary)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(remaining, 0);
+    assert_eq!(remaining, 1);
+
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/category-budgets/{temporary}?month=2026-11"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/categories/{temporary}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], false);
+}
+
+#[tokio::test]
+async fn category_budget_limits_enforce_parent_child_and_category_move_rules() {
+    let (app, _pool, _directory) = setup().await;
+    let food = category_id(&app, "expense", "Food & Drink").await;
+    let dining = category_id(&app, "expense", "Dining Out").await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+
+    let (status, body) = update_category_shape(&app, dining, None, Some(Some(food))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, food, "2026-11", 500_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = set_budget(&app, dining, "2026-11", 600_000).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"],
+        "subcategory budget cannot exceed its parent category budget for the same month"
+    );
+    assert_eq!(
+        budget_row(&monthly_budgets(&app, "2026-11").await, dining)["limit_minor"],
+        Value::Null
+    );
+
+    let (status, body) = set_budget(&app, dining, "2026-11", 150_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, food, "2026-11", 50_000).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"],
+        "parent category budget cannot be lower than a subcategory budget for the same month"
+    );
+    assert_eq!(
+        budget_row(&monthly_budgets(&app, "2026-11").await, food)["limit_minor"],
+        500_000
+    );
+
+    let (status, body) = set_budget(&app, food, "2026-11", 150_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, dining, "2026-11", 150_001).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        budget_row(&monthly_budgets(&app, "2026-11").await, dining)["limit_minor"],
+        150_000
+    );
+
+    let (status, body) = update_category_shape(&app, food, Some("income"), Some(None)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"],
+        "category type cannot change while it has saved budgets"
+    );
+
+    let (status, body) = set_budget(&app, shopping, "2026-11", 50_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = update_category_shape(&app, dining, None, Some(Some(shopping))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"],
+        "subcategory budget cannot exceed its new parent category budget for the same month"
+    );
+    assert_eq!(
+        budget_row(&monthly_budgets(&app, "2026-11").await, dining)["parent_id"],
+        food
+    );
+
+    let (status, body) = set_budget(&app, shopping, "2026-11", 200_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = update_category_shape(&app, dining, None, Some(Some(shopping))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        budget_row(&monthly_budgets(&app, "2026-11").await, dining)["parent_id"],
+        shopping
+    );
+    let (status, body) = update_category_shape(&app, dining, None, Some(None)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        budget_row(&monthly_budgets(&app, "2026-11").await, dining)["parent_id"],
+        Value::Null
+    );
+}
+
+#[tokio::test]
+async fn monthly_budgets_flag_invalid_date_expenses_without_counting_their_month() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Invalid date budget checking", 100_000).await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        1_000,
+        "Valid monthly expense",
+        Some(shopping),
+        "2026-11-10T12:00:00",
+    )
+    .await;
+    for (name, invalid) in [
+        ("Formula invalid date", "=2026-11-10"),
+        ("Impossible invalid date", "2026-02-30T12:00:00"),
+    ] {
+        create_entry_at(
+            &app,
+            "expense",
+            checking,
+            500,
+            name,
+            Some(shopping),
+            "2026-11-11T12:00:00",
+        )
+        .await;
+        sqlx::query("UPDATE entries SET occurred_at = ? WHERE name = ?")
+            .bind(invalid)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let november = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(november["total_spent_minor"], 1_000);
+    assert_eq!(november["expense_count"], 1);
+    assert_eq!(november["invalid_date_expense_count"], 2);
+    assert_eq!(november["invalid_date_spent_minor"], 1_000);
+    assert_eq!(budget_row(&november, shopping)["spent_minor"], 1_000);
+    assert_eq!(state(&app).await["totals"]["expense_minor"], 2_000);
 }

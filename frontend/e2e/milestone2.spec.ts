@@ -1,6 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const CSV_HEADERS = [
   "Date",
   "Type",
@@ -633,4 +641,132 @@ test("monthly category budgets roll up subcategories and persist independent mon
   await expect(diningRow.getByTestId(`budget-limit-${diningId}`)).toHaveText("No limit");
   await expect(diningRow.getByTestId(`budget-spent-${diningId}`)).toContainText("1,800.00");
   await expect(diningRow.getByRole("button", { name: "Set limit", exact: true })).toBeDisabled();
+});
+
+test("budget responses stay tied to their selected month and invalid dates are flagged", async ({
+  page,
+  request,
+}) => {
+  const monthA = "2028-01";
+  const monthB = "2028-02";
+  const initialState = await (await request.get("/api/state")).json();
+  const foodId = initialState.categories.find(
+    (category: { name: string }) => category.name === "Food & Drink",
+  ).id as number;
+  const groceriesId = initialState.categories.find(
+    (category: { name: string }) => category.name === "Groceries",
+  ).id as number;
+  const accountResponse = await request.post("/api/accounts", {
+    data: { name: "Budget race checking", currency: "INR", opening_balance_minor: 100000 },
+  });
+  expect(accountResponse.ok()).toBeTruthy();
+  const accountId = (await accountResponse.json()).id as number;
+  for (const [month, amount] of [[monthA, 12345], [monthB, 67890]] as const) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind: "expense",
+        account_id: accountId,
+        amount_minor: amount,
+        name: `Budget race ${month}`,
+        category_id: groceriesId,
+        occurred_at: `${month}-10T12:00:00`,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+  const budgetResponse = await request.put(`/api/category-budgets/${foodId}?month=${monthB}`, {
+    data: { amount_minor: 100000 },
+  });
+  expect(budgetResponse.ok()).toBeTruthy();
+
+  await page.goto("/");
+  await page.getByTestId("nav-budgets").click();
+  const oldLoad = deferred();
+  const oldLoadStarted = deferred();
+  const oldLoadFinished = deferred();
+  await page.route(/\/api\/category-budgets\?month=2028-01$/, async (route) => {
+    oldLoadStarted.resolve();
+    const response = await route.fetch();
+    await oldLoad.promise;
+    await route.fulfill({ response });
+    oldLoadFinished.resolve();
+  });
+  await page.route(/\/api\/category-budgets\?month=2028-02$/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.invalid_date_expense_count = 2;
+    body.invalid_date_spent_minor = 1000;
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      json: body,
+    });
+  });
+
+  await page.getByTestId("budget-month").fill(monthA);
+  await oldLoadStarted.promise;
+  await expect(page.getByText("Loading budgets…")).toBeVisible();
+  await expect(page.getByTestId(`edit-budget-${foodId}`)).toHaveCount(0);
+  await page.getByTestId("budget-month").fill(monthB);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("678.90");
+  await expect(page.getByTestId("budget-invalid-date-warning")).toContainText(
+    "2 expenses with invalid dates",
+  );
+  await expect(page.getByTestId("budget-invalid-date-warning")).toContainText("₹10.00");
+  oldLoad.resolve();
+  await oldLoadFinished.promise;
+  await expect(page.getByTestId("budget-month")).toHaveValue(monthB);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("678.90");
+
+  await page.getByTestId("budget-month").fill(monthA);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("123.45");
+  const saveResponse = deferred();
+  const saveStarted = deferred();
+  const saveFinished = deferred();
+  await page.route(/\/api\/category-budgets\/\d+\?month=2028-01$/, async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    saveStarted.resolve();
+    const response = await route.fetch();
+    await saveResponse.promise;
+    await route.fulfill({ response });
+    saveFinished.resolve();
+  });
+  const foodRow = page.getByTestId(`budget-row-${foodId}`);
+  await foodRow.getByRole("button", { name: "Set limit", exact: true }).click();
+  await page.getByTestId("budget-limit-amount").fill("500");
+  await page.getByTestId("save-budget-limit").click();
+  await saveStarted.promise;
+  await page.getByTestId("budget-month").fill(monthB);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("678.90");
+  saveResponse.resolve();
+  await saveFinished.promise;
+  await expect(page.getByTestId("budget-month")).toHaveValue(monthB);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("678.90");
+  await expect(foodRow.getByTestId(`budget-limit-${foodId}`)).toContainText("1,000.00");
+
+  const removeResponse = deferred();
+  const removeStarted = deferred();
+  const removeFinished = deferred();
+  await page.route(/\/api\/category-budgets\/\d+\?month=2028-02$/, async (route) => {
+    if (route.request().method() !== "DELETE") {
+      await route.continue();
+      return;
+    }
+    removeStarted.resolve();
+    const response = await route.fetch();
+    await removeResponse.promise;
+    await route.fulfill({ response });
+    removeFinished.resolve();
+  });
+  await foodRow.getByRole("button", { name: "Remove", exact: true }).click();
+  await removeStarted.promise;
+  await page.getByTestId("budget-month").fill(monthA);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("123.45");
+  removeResponse.resolve();
+  await removeFinished.promise;
+  await expect(page.getByTestId("budget-month")).toHaveValue(monthA);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("123.45");
 });

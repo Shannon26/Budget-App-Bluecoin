@@ -1378,6 +1378,10 @@ textarea {
   font-size: 10px;
 }
 
+.budget-invalid-date-warning {
+  margin-bottom: 20px;
+}
+
 .budget-editor {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(170px, 240px) auto auto;

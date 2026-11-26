@@ -830,9 +830,12 @@ impl Store {
         Ok(())
     }
 
-    async fn budget_category(&self, category_id: i64) -> AppResult<(String, Option<String>)> {
-        sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT kind, archived_at FROM categories WHERE id = ?",
+    async fn budget_category(
+        &self,
+        category_id: i64,
+    ) -> AppResult<(String, Option<String>, Option<i64>)> {
+        sqlx::query_as::<_, (String, Option<String>, Option<i64>)>(
+            "SELECT kind, archived_at, parent_id FROM categories WHERE id = ?",
         )
         .bind(category_id)
         .fetch_optional(&self.pool)
@@ -842,7 +845,7 @@ impl Store {
 
     fn validate_budget_category(
         category_id: i64,
-        category: &(String, Option<String>),
+        category: &(String, Option<String>, Option<i64>),
         existing_limit: Option<i64>,
     ) -> AppResult<()> {
         if category.0 != "expense" {
@@ -865,12 +868,8 @@ impl Store {
         let expenses = sqlx::query_as::<_, (Option<i64>, i64, String)>(
             "SELECT category_id, amount_minor, occurred_at
              FROM entries
-             WHERE kind = 'expense'
-               AND substr(occurred_at, 1, 10) >= ?
-               AND substr(occurred_at, 1, 10) < ?",
+             WHERE kind = 'expense'",
         )
-        .bind(first_day)
-        .bind(next_month)
         .fetch_all(&self.pool)
         .await?;
 
@@ -878,11 +877,15 @@ impl Store {
         let mut total_spent_minor = 0_i64;
         let mut uncategorized_spent_minor = 0_i64;
         let mut expense_count = 0_i64;
+        let mut invalid_date_expense_count = 0_i64;
+        let mut invalid_date_spent_minor = 0_i64;
         for (category_id, amount_minor, occurred_at) in expenses {
             let Some(date) = date_only(&occurred_at) else {
+                invalid_date_expense_count += 1;
+                invalid_date_spent_minor += amount_minor;
                 continue;
             };
-            if !date.starts_with(month) {
+            if date.as_str() < first_day.as_str() || date.as_str() >= next_month.as_str() {
                 continue;
             }
             total_spent_minor += amount_minor;
@@ -983,6 +986,8 @@ impl Store {
             total_spent_minor,
             uncategorized_spent_minor,
             expense_count,
+            invalid_date_expense_count,
+            invalid_date_spent_minor,
             categories,
         })
     }
@@ -1007,6 +1012,77 @@ impl Store {
         total
     }
 
+    async fn validate_budget_hierarchy(
+        &self,
+        category_id: i64,
+        parent_id: Option<i64>,
+        month: &str,
+        amount_minor: i64,
+    ) -> AppResult<()> {
+        if let Some(parent_id) = parent_id {
+            let parent_limit = sqlx::query_scalar::<_, i64>(
+                "SELECT amount_minor FROM category_budgets WHERE category_id = ? AND month = ?",
+            )
+            .bind(parent_id)
+            .bind(month)
+            .fetch_optional(&self.pool)
+            .await?;
+            if parent_limit.is_some_and(|limit| amount_minor > limit) {
+                return Err(AppError::BadRequest(
+                    "subcategory budget cannot exceed its parent category budget for the same month"
+                        .to_string(),
+                ));
+            }
+        }
+        let child_over_limit = sqlx::query_scalar::<_, i64>(
+            "SELECT b.category_id
+             FROM category_budgets b
+             JOIN categories c ON c.id = b.category_id
+             WHERE c.parent_id = ? AND b.month = ? AND b.amount_minor > ?
+             LIMIT 1",
+        )
+        .bind(category_id)
+        .bind(month)
+        .bind(amount_minor)
+        .fetch_optional(&self.pool)
+        .await?;
+        if child_over_limit.is_some() {
+            return Err(AppError::BadRequest(
+                "parent category budget cannot be lower than a subcategory budget for the same month"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn validate_category_move_budgets(
+        &self,
+        category_id: i64,
+        new_parent_id: Option<i64>,
+    ) -> AppResult<()> {
+        let Some(parent_id) = new_parent_id else {
+            return Ok(());
+        };
+        let violation = sqlx::query_scalar::<_, String>(
+            "SELECT b.month
+             FROM category_budgets b
+             JOIN category_budgets pb ON pb.category_id = ? AND pb.month = b.month
+             WHERE b.category_id = ? AND b.amount_minor > pb.amount_minor
+             LIMIT 1",
+        )
+        .bind(parent_id)
+        .bind(category_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if violation.is_some() {
+            return Err(AppError::BadRequest(
+                "subcategory budget cannot exceed its new parent category budget for the same month"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn set_category_budget(
         &self,
         category_id: i64,
@@ -1024,6 +1100,8 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Self::validate_budget_category(category_id, &category, existing_limit)?;
+        self.validate_budget_hierarchy(category_id, category.2, month, amount_minor)
+            .await?;
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO category_budgets (category_id, month, amount_minor, created_at, updated_at)
@@ -1228,6 +1306,17 @@ impl Store {
             .bind(&current.kind)
             .fetch_one(&self.pool)
             .await?;
+            let budgets = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM category_budgets WHERE category_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+            if budgets > 0 {
+                return Err(AppError::BadRequest(
+                    "category type cannot change while it has saved budgets".to_string(),
+                ));
+            }
             if references > 0 || children > 0 {
                 return Err(AppError::BadRequest(
                     "category type cannot change after it has entries or child categories"
@@ -1237,6 +1326,10 @@ impl Store {
         }
         self.validate_category_parent(&request.kind, request.parent_id, Some(id))
             .await?;
+        if current.parent_id != request.parent_id {
+            self.validate_category_move_budgets(id, request.parent_id)
+                .await?;
+        }
         let duplicate = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM categories
              WHERE id <> ? AND kind = ? AND parent_id IS ? AND lower(name) = lower(?) AND archived_at IS NULL",
@@ -1290,7 +1383,13 @@ impl Store {
                 .bind(id)
                 .fetch_one(&mut *transaction)
                 .await?;
-        let archived = references > 0 || children > 0;
+        let budgets = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM category_budgets WHERE category_id = ?",
+        )
+        .bind(id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let archived = references > 0 || children > 0 || budgets > 0;
         if archived {
             sqlx::query("UPDATE categories SET archived_at = ? WHERE id = ?")
                 .bind(Utc::now().to_rfc3339())
