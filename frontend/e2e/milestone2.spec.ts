@@ -20,6 +20,13 @@ async function openEntry(page: import("@playwright/test").Page, kind: string, na
 test("category editor keeps new hierarchy changes at two levels", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("nav-categories").click();
+  await expect(page.locator(".category-row").first()).toBeVisible();
+
+  const categoryNames = await page.locator(".category-row-main strong").allTextContents();
+  const entertainmentIndex = categoryNames.findIndex((name) => name === "Entertainment");
+  const diningIndex = categoryNames.findIndex((name) => name === "Dining Out");
+  expect(entertainmentIndex).toBeGreaterThanOrEqual(0);
+  expect(diningIndex).toBe(entertainmentIndex + 1);
 
   const foodRow = page.locator(".category-row:not(.category-child)").filter({ hasText: "Food & Drink" });
   await foodRow.getByRole("button", { name: "Edit", exact: true }).click();

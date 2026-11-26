@@ -31,16 +31,33 @@ const emptyForm: CategoryFormState = {
 
 function orderedCategories(categories: Category[], kind: TransactionKind) {
   const matching = categories.filter((category) => category.kind === kind);
-  const parents = matching
-    .filter((category) => category.parent_id === null)
-    .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
-  const children = matching
-    .filter((category) => category.parent_id !== null)
-    .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
-  return [
-    ...parents,
-    ...children.sort((left, right) => (left.parent_id ?? 0) - (right.parent_id ?? 0)),
-  ];
+  const byParent = new Map<number | null, Category[]>();
+  for (const category of matching) {
+    const siblings = byParent.get(category.parent_id) ?? [];
+    siblings.push(category);
+    byParent.set(category.parent_id, siblings);
+  }
+  for (const siblings of byParent.values()) {
+    siblings.sort(
+      (left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name),
+    );
+  }
+
+  const ordered: Array<{ category: Category; depth: number }> = [];
+  const visited = new Set<number>();
+  const visit = (category: Category, depth: number) => {
+    if (visited.has(category.id)) return;
+    visited.add(category.id);
+    ordered.push({ category, depth });
+    for (const child of byParent.get(category.id) ?? []) visit(child, depth + 1);
+  };
+
+  for (const root of byParent.get(null) ?? []) visit(root, 0);
+  // Preserve and surface any legacy orphan/cycle data instead of hiding it.
+  for (const category of matching) {
+    if (!visited.has(category.id)) visit(category, 0);
+  }
+  return ordered;
 }
 
 export default function CategoryManager({ data, refresh, onMessage }: CategoryManagerProps) {
@@ -145,11 +162,11 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
           <div className="category-group" key={kind}>
             <h3>{kind === "expense" ? "Expense categories" : "Income categories"}</h3>
             <div className="category-list">
-              {orderedCategories(data.categories, kind).map((category) => {
+              {orderedCategories(data.categories, kind).map(({ category, depth }) => {
                 const total = totals.get(category.id);
                 return (
                   <article
-                    className={`category-row ${category.parent_id ? "category-child" : ""} ${category.archived_at ? "category-archived" : ""}`}
+                    className={`category-row ${depth > 0 ? "category-child" : ""} category-depth-${Math.min(depth, 2)} ${category.archived_at ? "category-archived" : ""}`}
                     data-testid={`category-row-${category.id}`}
                     key={category.id}
                   >

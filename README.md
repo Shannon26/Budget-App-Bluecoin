@@ -180,6 +180,8 @@ Example transaction:
 
 Migration `002_categories_and_ledger.sql` is additive: it preserves all existing accounts, entries, transfers, amounts, and links. Existing entries receive an empty/default name, null category, and unreconciled status; existing transfer names default from their notes. Balances continue to derive from opening balances plus ledger entries.
 
+Migration `003_fix_dining_category.sql` moves the existing **Dining Out** category from **Food & Drink** to **Entertainment** to match the observed Bluecoins taxonomy. It changes only the parent pointer, so historical transaction assignments and category totals remain intact.
+
 A manual upgrade check migrated a Milestone-1-shaped database containing two accounts, income, expense, and a transfer. Before/after values were preserved exactly: balances `82500` and `45000`, income `10000`, expense `2500`, one combined transfer row, and legacy entries shown as Uncategorized.
 
 ## Resetting local data

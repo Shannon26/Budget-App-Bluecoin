@@ -1342,6 +1342,11 @@ textarea {
   background: #fffef9;
 }
 
+.category-depth-2 {
+  margin-left: 44px;
+  border-style: dashed;
+}
+
 .category-archived {
   opacity: 0.68;
 }
@@ -1457,6 +1462,10 @@ textarea {
 
   .category-child {
     margin-left: 12px;
+  }
+
+  .category-depth-2 {
+    margin-left: 24px;
   }
 
   .category-row {
