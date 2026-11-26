@@ -1,0 +1,20 @@
+# Rust / backend
+backend/target/
+backend/budget.db
+backend/budget.db-wal
+backend/budget.db-shm
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local logs
+*.log
+Bluecoins*
