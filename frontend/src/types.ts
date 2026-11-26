@@ -36,6 +36,29 @@ export interface CategoryTotal {
   entry_count: number;
 }
 
+export interface CategoryBudget {
+  category_id: number;
+  name: string;
+  parent_id: number | null;
+  parent_name: string | null;
+  color: string;
+  icon: string;
+  sort_order: number;
+  archived_at: string | null;
+  limit_minor: number | null;
+  direct_spent_minor: number;
+  spent_minor: number;
+  remaining_minor: number | null;
+}
+
+export interface MonthlyCategoryBudgets {
+  month: string;
+  total_spent_minor: number;
+  uncategorized_spent_minor: number;
+  expense_count: number;
+  categories: CategoryBudget[];
+}
+
 export interface LedgerEntry {
   id: number;
   kind: EntryKind;

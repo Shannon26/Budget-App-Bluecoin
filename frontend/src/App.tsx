@@ -6,6 +6,7 @@ import {
   type FormEvent,
 } from "react";
 import { api } from "./api";
+import Budgets from "./Budgets";
 import CategoryManager from "./CategoryManager";
 import Ledger from "./Ledger";
 import { dateTimeValue, formatMinor, localDateValue, parseMinorUnits } from "./money";
@@ -20,7 +21,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories";
+type Tab = "overview" | "ledger" | "categories" | "budgets";
 
 function initials(name: string): string {
   return name
@@ -272,6 +273,14 @@ export default function App() {
           onClick={() => setActiveTab("categories")}
         >
           Categories
+        </button>
+        <button
+          data-testid="nav-budgets"
+          className={activeTab === "budgets" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveTab("budgets")}
+        >
+          Budgets
         </button>
       </nav>
 
@@ -741,10 +750,16 @@ export default function App() {
             <CategoryManager data={data} refresh={refresh} onMessage={onMessage} />
           </section>
         )}
+
+        {activeTab === "budgets" && (
+          <section className="panel ledger-panel">
+            <Budgets onMessage={onMessage} />
+          </section>
+        )}
       </main>
 
       <footer>
-        <span>Paisa · categories and transaction management</span>
+        <span>Paisa · transactions, categories, and monthly budgets</span>
         <span>Amounts are stored as integer minor units (paise).</span>
       </footer>
     </div>

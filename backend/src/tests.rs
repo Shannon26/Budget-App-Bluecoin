@@ -40,6 +40,34 @@ async fn send_json(app: &Router, method: &str, uri: &str, body: Value) -> (Statu
     (status, value)
 }
 
+async fn send_csv(app: &Router, uri: &str) -> (StatusCode, String, String, Vec<u8>) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let content_disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, content_type, content_disposition, bytes.to_vec())
+}
+
 async fn create_account(app: &Router, name: &str, opening_balance_minor: i64) -> i64 {
     let (status, body) = send_json(
         app,
@@ -277,6 +305,69 @@ async fn create_entry(
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     body["id"].as_i64().unwrap()
+}
+
+async fn create_entry_at(
+    app: &Router,
+    kind: &str,
+    account_id: i64,
+    amount_minor: i64,
+    name: &str,
+    category_id: Option<i64>,
+    occurred_at: &str,
+) -> i64 {
+    let (status, body) = send_json(
+        app,
+        "POST",
+        "/api/transactions",
+        json!({
+            "kind": kind,
+            "account_id": account_id,
+            "amount_minor": amount_minor,
+            "name": name,
+            "category_id": category_id,
+            "occurred_at": occurred_at
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_i64().unwrap()
+}
+
+async fn monthly_budgets(app: &Router, month: &str) -> Value {
+    let (status, body) = send_json(
+        app,
+        "GET",
+        &format!("/api/category-budgets?month={month}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+async fn set_budget(
+    app: &Router,
+    category_id: i64,
+    month: &str,
+    amount_minor: i64,
+) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "PUT",
+        &format!("/api/category-budgets/{category_id}?month={month}"),
+        json!({ "amount_minor": amount_minor }),
+    )
+    .await
+}
+
+fn budget_row(body: &Value, category_id: i64) -> &Value {
+    body["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category_id"] == category_id)
+        .unwrap()
 }
 
 #[tokio::test]
@@ -934,4 +1025,769 @@ async fn ledger_pagination_has_stable_order_and_full_day_totals_for_201_entries(
     assert_eq!(status, StatusCode::OK, "{history}");
     assert_eq!(history["total_count"], 201);
     assert_eq!(history["daily_totals"][0]["expense_minor"], 20_100);
+}
+
+#[tokio::test]
+async fn csv_export_returns_every_filtered_row_and_ignores_pagination() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "CSV pagination account", 100_000).await;
+    sqlx::query(
+        "WITH RECURSIVE numbers(value) AS (
+             SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 201
+         )
+         INSERT INTO entries
+             (kind, account_id, amount_minor, name, category_id, reconciled, note, occurred_at, created_at, transfer_id)
+         SELECT 'expense', ?, 100, 'CSV pagination ' || value, NULL, 0, '',
+                '2026-11-20T12:00:00', '2026-11-20T12:00:00Z', NULL
+         FROM numbers",
+    )
+    .bind(checking)
+    .execute(&pool)
+    .await
+    .unwrap();
+    create_entry(&app, "expense", checking, 999, "Excluded row", None).await;
+
+    let (status, first) = send_json(
+        &app,
+        "GET",
+        &format!("/api/ledger?account_id={checking}&search=CSV%20pagination&limit=1&offset=200"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["total_count"], 201);
+    assert_eq!(first["entries"].as_array().unwrap().len(), 1);
+
+    let (status, content_type, content_disposition, bytes) = send_csv(
+        &app,
+        &format!(
+            "/api/ledger/export?account_id={checking}&search=CSV%20pagination&limit=1&offset=200"
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "text/csv; charset=utf-8");
+    assert_eq!(
+        content_disposition,
+        "attachment; filename=\"paisa-ledger.csv\""
+    );
+    let csv = String::from_utf8(bytes).unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines.len(), 202);
+    assert_eq!(lines[0], csv::LEDGER_CSV_HEADERS.join(","));
+    assert!(lines[1].contains("CSV pagination 201,"));
+    assert!(lines[201].contains("CSV pagination 1,"));
+    assert!(lines
+        .iter()
+        .skip(1)
+        .all(|line| line.contains(",Expense,") && line.contains(",1.00,INR,Unreconciled,")));
+    assert!(!csv.contains("Excluded row"));
+}
+
+#[tokio::test]
+async fn csv_export_preserves_categories_transfers_and_special_text() {
+    let (app, _pool, _directory) = setup().await;
+    let checking = create_account(&app, "=Cash, \"Main\"", 100_000).await;
+    let savings = create_account(&app, "Savings", 20_000).await;
+    let dining = category_id(&app, "expense", "Dining Out").await;
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transactions",
+        json!({
+            "kind": "expense",
+            "account_id": checking,
+            "amount_minor": 1234,
+            "name": "=SUM(1,2), \"lunch\"\nsecond line",
+            "category_id": dining,
+            "reconciled": true,
+            "note": "@note\nwith, \"quotes\"",
+            "occurred_at": "2026-11-20T10:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/categories/{dining}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], true);
+
+    let (status, _content_type, _content_disposition, bytes) =
+        send_csv(&app, "/api/ledger/export?search=SUM").await;
+    assert_eq!(status, StatusCode::OK);
+    let csv = String::from_utf8(bytes).unwrap();
+    let expected = r#"Date,Type,Name,Account,Source Account,Destination Account,Category,Subcategory,Amount,Currency,Status,Note
+2026-11-20,Expense,"'=SUM(1,2), ""lunch""
+second line","'=Cash, ""Main""",,,Entertainment,Dining Out,12.34,INR,Reconciled,"'@note
+with, ""quotes"""
+"#;
+    assert_eq!(csv, expected);
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transactions",
+        json!({
+            "kind": "income",
+            "account_id": checking,
+            "amount_minor": 500000,
+            "name": "CSV Salary",
+            "occurred_at": "2026-11-20T11:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": checking,
+            "to_account_id": savings,
+            "amount_minor": 25000,
+            "name": "+CSV transfer, \"move\"",
+            "note": "-transfer note",
+            "occurred_at": "2026-11-20T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, _content_type, _content_disposition, bytes) =
+        send_csv(&app, &format!("/api/ledger/export?account_id={checking}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let csv = String::from_utf8(bytes).unwrap();
+    assert_eq!(
+        csv.lines()
+            .filter(|line| line.contains(",Transfer,"))
+            .count(),
+        1
+    );
+    assert!(csv.contains(
+        "2026-11-20,Transfer,\"'+CSV transfer, \"\"move\"\"\",,\"'=Cash, \"\"Main\"\"\",Savings,,,250.00,INR,Unreconciled,'-transfer note"
+    ));
+    assert!(csv.contains(
+        "2026-11-20,Income,CSV Salary,\"'=Cash, \"\"Main\"\"\",,,Uncategorized,,5000.00,INR,Unreconciled,"
+    ));
+    assert!(!csv.contains("transfer_in"));
+    assert!(!csv.contains("transfer_out"));
+}
+
+#[tokio::test]
+async fn transaction_and_transfer_dates_are_validated_before_writes() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Date checking", 100_000).await;
+    let savings = create_account(&app, "Date savings", 20_000).await;
+    let invalid_date_error =
+        "occurred_at must be a valid date in YYYY-MM-DD or ISO 8601 date-time format";
+
+    for invalid in ["not-a-date", "2026-02-30T12:00:00", "=2026-11-20"] {
+        let (status, body) = send_json(
+            &app,
+            "POST",
+            "/api/transactions",
+            json!({
+                "kind": "expense",
+                "account_id": checking,
+                "amount_minor": 100,
+                "name": "Invalid date transaction",
+                "occurred_at": invalid
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], invalid_date_error);
+    }
+    let entry_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(entry_count, 0);
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transactions",
+        json!({
+            "kind": "expense",
+            "account_id": checking,
+            "amount_minor": 100,
+            "name": "Valid date transaction",
+            "occurred_at": "2026-11-20"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let transaction_id = body["id"].as_i64().unwrap();
+
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/transactions/{transaction_id}"),
+        json!({
+            "kind": "expense",
+            "account_id": checking,
+            "amount_minor": 100,
+            "name": "Invalid date update",
+            "occurred_at": "2026-11-31T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], invalid_date_error);
+    let stored_date: String = sqlx::query_scalar("SELECT occurred_at FROM entries WHERE id = ?")
+        .bind(transaction_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_date, "2026-11-20");
+
+    for invalid in ["not-a-date", "2026-02-30T12:00:00", "+2026-11-20"] {
+        let (status, body) = send_json(
+            &app,
+            "POST",
+            "/api/transfers",
+            json!({
+                "from_account_id": checking,
+                "to_account_id": savings,
+                "amount_minor": 100,
+                "name": "Invalid date transfer",
+                "occurred_at": invalid
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], invalid_date_error);
+    }
+    let transfer_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transfers")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(transfer_count, 0);
+    let leg_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM entries WHERE kind IN ('transfer_in', 'transfer_out')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(leg_count, 0);
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": checking,
+            "to_account_id": savings,
+            "amount_minor": 100,
+            "name": "Valid date transfer",
+            "occurred_at": "2026-11-20T12:00:00Z"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let transfer_id = body["id"].as_i64().unwrap();
+
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/transfers/{transfer_id}"),
+        json!({
+            "from_account_id": checking,
+            "to_account_id": savings,
+            "amount_minor": 100,
+            "name": "Invalid transfer date update",
+            "occurred_at": "2026-11-31T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], invalid_date_error);
+    let stored_date: String = sqlx::query_scalar("SELECT occurred_at FROM transfers WHERE id = ?")
+        .bind(transfer_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_date, "2026-11-20T12:00:00Z");
+}
+
+#[tokio::test]
+async fn csv_export_omits_invalid_legacy_dates_without_leaking_formula_text() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Legacy date checking", 100_000).await;
+    let savings = create_account(&app, "Legacy date savings", 20_000).await;
+
+    for (name, date) in [
+        ("Legacy formula date", "2026-11-20"),
+        ("Legacy impossible date", "2026-11-20"),
+        ("Valid timestamp", "2026-11-21T23:59:59Z"),
+        ("Valid date only", "2026-11-22"),
+    ] {
+        let (status, body) = send_json(
+            &app,
+            "POST",
+            "/api/transactions",
+            json!({
+                "kind": "expense",
+                "account_id": checking,
+                "amount_minor": 100,
+                "name": name,
+                "occurred_at": date
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    for (name, invalid) in [
+        ("Legacy formula date", "=2026-11-20"),
+        ("Legacy impossible date", "2026-02-30T12:00:00"),
+    ] {
+        sqlx::query("UPDATE entries SET occurred_at = ? WHERE name = ?")
+            .bind(invalid)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": checking,
+            "to_account_id": savings,
+            "amount_minor": 100,
+            "name": "Legacy invalid transfer",
+            "occurred_at": "2026-11-23T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let transfer_id = body["id"].as_i64().unwrap();
+    sqlx::query("UPDATE transfers SET occurred_at = ? WHERE id = ?")
+        .bind("not-a-date")
+        .bind(transfer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, _content_type, _content_disposition, bytes) =
+        send_csv(&app, "/api/ledger/export").await;
+    assert_eq!(status, StatusCode::OK);
+    let csv = String::from_utf8(bytes).unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert!(lines
+        .iter()
+        .find(|line| line.contains("Legacy formula date"))
+        .unwrap()
+        .starts_with(",Expense,"));
+    assert!(lines
+        .iter()
+        .find(|line| line.contains("Legacy impossible date"))
+        .unwrap()
+        .starts_with(",Expense,"));
+    assert!(lines
+        .iter()
+        .find(|line| line.contains("Legacy invalid transfer"))
+        .unwrap()
+        .starts_with(",Transfer,"));
+    assert!(lines
+        .iter()
+        .find(|line| line.contains("Valid timestamp"))
+        .unwrap()
+        .starts_with("2026-11-21,Expense,"));
+    assert!(lines
+        .iter()
+        .find(|line| line.contains("Valid date only"))
+        .unwrap()
+        .starts_with("2026-11-22,Expense,"));
+    assert!(!csv.contains("=2026-11-20"));
+    assert!(!csv.contains("2026-02-30"));
+    assert!(!csv.contains("not-a-date"));
+}
+
+#[tokio::test]
+async fn monthly_category_budgets_roll_up_children_without_double_counting_overall_spend() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Budget checking", 1_000_000).await;
+    let savings = create_account(&app, "Budget savings", 100_000).await;
+    let food = category_id(&app, "expense", "Food & Drink").await;
+    let groceries = category_id(&app, "expense", "Groceries").await;
+    let dining = category_id(&app, "expense", "Dining Out").await;
+    // This isolated fixture uses the requested Food & Drink → Dining Out example.
+    sqlx::query("UPDATE categories SET parent_id = ? WHERE id = ?")
+        .bind(food)
+        .bind(dining)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, body) = set_budget(&app, food, "2026-11", 500_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, dining, "2026-11", 150_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, dining, "2026-12", 200_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        100_000,
+        "Budget groceries",
+        Some(groceries),
+        "2026-11-05T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        180_000,
+        "Budget dining",
+        Some(dining),
+        "2026-11-06T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        30_000,
+        "Budget uncategorized",
+        None,
+        "2026-11-07T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        checking,
+        500_000,
+        "Budget income does not spend",
+        None,
+        "2026-11-08T12:00:00",
+    )
+    .await;
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": checking,
+            "to_account_id": savings,
+            "amount_minor": 100_000,
+            "name": "Budget transfer does not spend",
+            "occurred_at": "2026-11-09T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let november = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(november["total_spent_minor"], 310_000);
+    assert_eq!(november["uncategorized_spent_minor"], 30_000);
+    assert_eq!(november["expense_count"], 3);
+    assert_eq!(budget_row(&november, food)["limit_minor"], 500_000);
+    assert_eq!(budget_row(&november, food)["direct_spent_minor"], 0);
+    assert_eq!(budget_row(&november, food)["spent_minor"], 280_000);
+    assert_eq!(budget_row(&november, food)["remaining_minor"], 220_000);
+    assert_eq!(budget_row(&november, groceries)["spent_minor"], 100_000);
+    assert_eq!(budget_row(&november, dining)["limit_minor"], 150_000);
+    assert_eq!(budget_row(&november, dining)["spent_minor"], 180_000);
+    assert_eq!(budget_row(&november, dining)["remaining_minor"], -30_000);
+
+    let december = monthly_budgets(&app, "2026-12").await;
+    assert_eq!(december["total_spent_minor"], 0);
+    assert_eq!(budget_row(&december, dining)["limit_minor"], 200_000);
+    assert_eq!(budget_row(&november, dining)["limit_minor"], 150_000);
+
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        20_000,
+        "Direct parent budget expense",
+        Some(food),
+        "2026-12-15T12:00:00",
+    )
+    .await;
+    let december = monthly_budgets(&app, "2026-12").await;
+    assert_eq!(december["total_spent_minor"], 20_000);
+    assert_eq!(budget_row(&december, food)["direct_spent_minor"], 20_000);
+    assert_eq!(budget_row(&december, food)["spent_minor"], 20_000);
+    assert_eq!(budget_row(&december, dining)["spent_minor"], 0);
+
+    // A fresh read after unrelated state reload keeps the persisted monthly limits.
+    state(&app).await;
+    let reloaded = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(budget_row(&reloaded, food)["limit_minor"], 500_000);
+    assert_eq!(budget_row(&reloaded, dining)["limit_minor"], 150_000);
+
+    let (status, body) = set_budget(&app, food, "2026-11", 400_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(budget_row(&body, food)["remaining_minor"], 120_000);
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/category-budgets/{dining}?month=2026-11"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(budget_row(&body, dining)["limit_minor"], Value::Null);
+    assert_eq!(budget_row(&body, dining)["spent_minor"], 180_000);
+}
+
+#[tokio::test]
+async fn category_budgets_use_calendar_boundaries_and_recalculate_after_entry_changes() {
+    let (app, _pool, _directory) = setup().await;
+    let checking = create_account(&app, "Boundary checking", 1_000_000).await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+    let (status, body) = set_budget(&app, shopping, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let october = create_entry_at(
+        &app,
+        "expense",
+        checking,
+        10_000,
+        "October boundary",
+        Some(shopping),
+        "2026-10-31T23:59:59",
+    )
+    .await;
+    let november_first = create_entry_at(
+        &app,
+        "expense",
+        checking,
+        20_000,
+        "November first",
+        Some(shopping),
+        "2026-11-01T00:00:00",
+    )
+    .await;
+    let november_last = create_entry_at(
+        &app,
+        "expense",
+        checking,
+        30_000,
+        "November last",
+        Some(shopping),
+        "2026-11-30T23:59:59",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        40_000,
+        "December boundary",
+        Some(shopping),
+        "2026-12-01T00:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        5_000,
+        "Leap day",
+        Some(shopping),
+        "2024-02-29T23:59:59",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        6_000,
+        "After leap day",
+        Some(shopping),
+        "2024-03-01T00:00:00",
+    )
+    .await;
+
+    assert_eq!(
+        monthly_budgets(&app, "2026-10").await["total_spent_minor"],
+        10_000
+    );
+    let november = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(november["total_spent_minor"], 50_000);
+    assert_eq!(budget_row(&november, shopping)["spent_minor"], 50_000);
+    assert_eq!(
+        monthly_budgets(&app, "2026-12").await["total_spent_minor"],
+        40_000
+    );
+    assert_eq!(
+        monthly_budgets(&app, "2024-02").await["total_spent_minor"],
+        5_000
+    );
+    assert_eq!(
+        monthly_budgets(&app, "2024-03").await["total_spent_minor"],
+        6_000
+    );
+
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/transactions/{november_first}"),
+        json!({
+            "kind": "expense",
+            "account_id": checking,
+            "amount_minor": 25_000,
+            "name": "November first edited",
+            "category_id": shopping,
+            "occurred_at": "2026-11-01T00:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        monthly_budgets(&app, "2026-11").await["total_spent_minor"],
+        55_000
+    );
+
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/transactions/{november_last}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        monthly_budgets(&app, "2026-11").await["total_spent_minor"],
+        25_000
+    );
+    assert_eq!(
+        monthly_budgets(&app, "2026-10").await["total_spent_minor"],
+        10_000
+    );
+
+    // Keep the fixture IDs referenced so accidental boundary omissions are explicit.
+    assert_ne!(october, november_first);
+}
+
+#[tokio::test]
+async fn category_budgets_validate_inputs_and_keep_archived_history_visible() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Archive budget checking", 100_000).await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+    let salary = category_id(&app, "income", "Salary").await;
+
+    for month in ["2026-13", "2026-00", "2026-1", "=2026-11", "+2026-11"] {
+        let (status, body) = send_json(
+            &app,
+            "GET",
+            &format!("/api/category-budgets?month={month}"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let (status, body) = set_budget(&app, shopping, month, 100_000).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    for amount in [0, -1] {
+        let (status, body) = set_budget(&app, shopping, "2026-11", amount).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (status, body) = set_budget(&app, salary, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"],
+        "budgets can only be set for expense categories"
+    );
+    let (status, body) = set_budget(&app, 999_999, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let budget_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM category_budgets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(budget_count, 0);
+
+    let (status, body) = set_budget(&app, shopping, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        12_345,
+        "Archived budget expense",
+        Some(shopping),
+        "2026-11-20T12:00:00",
+    )
+    .await;
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/categories/{shopping}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], true);
+
+    let november = monthly_budgets(&app, "2026-11").await;
+    assert!(budget_row(&november, shopping)["archived_at"].is_string());
+    assert_eq!(budget_row(&november, shopping)["limit_minor"], 100_000);
+    assert_eq!(budget_row(&november, shopping)["spent_minor"], 12_345);
+    let (status, body) = set_budget(&app, shopping, "2026-12", 100_000).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = set_budget(&app, shopping, "2026-11", 150_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(budget_row(&body, shopping)["limit_minor"], 150_000);
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/category-budgets/{shopping}?month=2026-11"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(budget_row(&body, shopping)["limit_minor"], Value::Null);
+
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/categories",
+        json!({
+            "name": "Temporary budget category",
+            "kind": "expense",
+            "parent_id": null,
+            "color": "#426b8a",
+            "icon": "•",
+            "sort_order": 999
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let temporary = body["id"].as_i64().unwrap();
+    let (status, body) = set_budget(&app, temporary, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/categories/{temporary}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], false);
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM category_budgets WHERE category_id = ?")
+            .bind(temporary)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, 0);
 }

@@ -1,4 +1,77 @@
-import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { expect, test, type Page } from "@playwright/test";
+
+const CSV_HEADERS = [
+  "Date",
+  "Type",
+  "Name",
+  "Account",
+  "Source Account",
+  "Destination Account",
+  "Category",
+  "Subcategory",
+  "Amount",
+  "Currency",
+  "Status",
+  "Note",
+];
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"') {
+        if (text[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        field += character;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ",") {
+      row.push(field);
+      field = "";
+    } else if (character === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (character === "\r") {
+      if (text[index + 1] === "\n") index += 1;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function downloadLedgerCsv(page: Page): Promise<string[][]> {
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByTestId("download-csv").click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("paisa-ledger.csv");
+  const downloadPath = await download.path();
+  expect(downloadPath).not.toBeNull();
+  return parseCsv(await readFile(downloadPath!, "utf8"));
+}
 
 async function createAccount(page: import("@playwright/test").Page, name: string, opening: string) {
   await page.getByTestId("account-name").fill(name);
@@ -244,6 +317,16 @@ test("ledger and account history load older same-day entries with complete daily
   await expect(day.locator(".ledger-day-header")).toContainText("Expense ₹201.00");
   await expect(rows).toHaveCount(200);
   await expect(page.locator(".load-more")).toContainText("Showing 200 of 201");
+
+  const exported = await downloadLedgerCsv(page);
+  expect(exported[0]).toEqual(CSV_HEADERS);
+  expect(exported.slice(1)).toHaveLength(201);
+  const exportedNames = exported.slice(1).map((row) => row[2]);
+  expect(new Set(exportedNames).size).toBe(201);
+  for (let value = 1; value <= 201; value += 1) {
+    expect(exportedNames).toContain(`Pagination expense ${value}`);
+  }
+
   await page.getByTestId("load-more").click();
   await expect(rows).toHaveCount(201);
   await expect(page.getByTestId("load-more")).toHaveCount(0);
@@ -268,4 +351,286 @@ test("ledger and account history load older same-day entries with complete daily
     elements.map((element) => element.getAttribute("data-testid")),
   );
   expect(new Set(historyIds).size).toBe(201);
+});
+
+test("CSV download honors reopened saved filters and preserves transfers and special text", async ({
+  page,
+  request,
+}) => {
+  const sourceResponse = await request.post("/api/accounts", {
+    data: { name: '=CSV Source, "Main"', currency: "INR", opening_balance_minor: 100000 },
+  });
+  expect(sourceResponse.ok()).toBeTruthy();
+  const sourceId = (await sourceResponse.json()).id as number;
+  const destinationResponse = await request.post("/api/accounts", {
+    data: { name: "CSV Destination", currency: "INR", opening_balance_minor: 0 },
+  });
+  expect(destinationResponse.ok()).toBeTruthy();
+  const destinationId = (await destinationResponse.json()).id as number;
+  const initialState = await (await request.get("/api/state")).json();
+  const groceriesId = initialState.categories.find(
+    (category: { name: string }) => category.name === "Groceries",
+  ).id as number;
+
+  const entries = [
+    {
+      kind: "expense",
+      account_id: sourceId,
+      amount_minor: 1234,
+      name: '=SUM(1,2), "lunch"\nsecond line',
+      category_id: groceriesId,
+      reconciled: true,
+      note: '@note\nwith, "quotes"',
+      occurred_at: "2026-11-21T10:00:00",
+    },
+    {
+      kind: "expense",
+      account_id: sourceId,
+      amount_minor: 999,
+      name: "CSV excluded distractor",
+      reconciled: false,
+      occurred_at: "2026-11-21T09:00:00",
+    },
+    {
+      kind: "income",
+      account_id: sourceId,
+      amount_minor: 500000,
+      name: "CSV Salary",
+      occurred_at: "2026-11-21T11:00:00",
+    },
+  ];
+  for (const entry of entries) {
+    const response = await request.post("/api/transactions", { data: entry });
+    expect(response.ok()).toBeTruthy();
+  }
+  const transferResponse = await request.post("/api/transfers", {
+    data: {
+      from_account_id: sourceId,
+      to_account_id: destinationId,
+      amount_minor: 25000,
+      name: '+CSV transfer, "move"',
+      note: "-transfer note",
+      occurred_at: "2026-11-21T12:00:00",
+    },
+  });
+  expect(transferResponse.ok()).toBeTruthy();
+
+  await page.goto("/");
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("ledger-search").fill("SUM(1,2)");
+  await page.getByTestId("filter-status").selectOption("true");
+  await page.getByTestId("apply-filters").click();
+  const specialRow = page
+    .locator('[data-testid^="ledger-row-expense-"]')
+    .filter({ hasText: "SUM(1,2)" });
+  await expect(specialRow).toHaveCount(1);
+  await expect(
+    page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "CSV excluded distractor" }),
+  ).toHaveCount(0);
+
+  await page.getByTestId("save-filter-name").fill("CSV special reconciled");
+  await page.getByTestId("save-filter").click();
+  await expect(page.getByText("Named filter saved.")).toBeVisible();
+  await page.reload();
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("saved-filter").selectOption({ label: "CSV special reconciled" });
+  await expect(specialRow).toHaveCount(1);
+
+  const savedFilterExport = await downloadLedgerCsv(page);
+  expect(savedFilterExport[0]).toEqual(CSV_HEADERS);
+  expect(savedFilterExport.slice(1)).toEqual([
+    [
+      "2026-11-21",
+      "Expense",
+      '\'=SUM(1,2), "lunch"\nsecond line',
+      '\'=CSV Source, "Main"',
+      "",
+      "",
+      "Food & Drink",
+      "Groceries",
+      "12.34",
+      "INR",
+      "Reconciled",
+      '\'@note\nwith, "quotes"',
+    ],
+  ]);
+
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.getByTestId("filter-account").selectOption(String(sourceId));
+  await page.getByTestId("apply-filters").click();
+  await expect(page.locator('[data-testid^="ledger-row-"]')).toHaveCount(4);
+
+  const accountExport = await downloadLedgerCsv(page);
+  expect(accountExport[0]).toEqual(CSV_HEADERS);
+  const dataRows = accountExport.slice(1);
+  expect(dataRows).toHaveLength(4);
+  const transferRows = dataRows.filter((row) => row[1] === "Transfer");
+  expect(transferRows).toEqual([
+    [
+      "2026-11-21",
+      "Transfer",
+      '\'+CSV transfer, "move"',
+      "",
+      '\'=CSV Source, "Main"',
+      "CSV Destination",
+      "",
+      "",
+      "250.00",
+      "INR",
+      "Unreconciled",
+      "'-transfer note",
+    ],
+  ]);
+  expect(dataRows.find((row) => row[2] === "CSV Salary")).toEqual([
+    "2026-11-21",
+    "Income",
+    "CSV Salary",
+    '\'=CSV Source, "Main"',
+    "",
+    "",
+    "Uncategorized",
+    "",
+    "5000.00",
+    "INR",
+    "Unreconciled",
+    "",
+  ]);
+});
+
+test("monthly category budgets roll up subcategories and persist independent monthly limits", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("nav-budgets").click();
+  const defaultMonth = await page.getByTestId("budget-month").inputValue();
+  expect(defaultMonth).toMatch(/^\d{4}-\d{2}$/);
+
+  const month = "2027-01";
+  const nextMonth = "2027-02";
+  const initialState = await (await request.get("/api/state")).json();
+  const foodId = initialState.categories.find(
+    (category: { name: string; kind: string }) => category.name === "Food & Drink" && category.kind === "expense",
+  ).id as number;
+  const groceriesId = initialState.categories.find(
+    (category: { name: string }) => category.name === "Groceries",
+  ).id as number;
+  const accountResponse = await request.post("/api/accounts", {
+    data: { name: "Budget E2E Checking", currency: "INR", opening_balance_minor: 1000000 },
+  });
+  expect(accountResponse.ok()).toBeTruthy();
+  const accountId = (await accountResponse.json()).id as number;
+  const savingsResponse = await request.post("/api/accounts", {
+    data: { name: "Budget E2E Savings", currency: "INR", opening_balance_minor: 0 },
+  });
+  expect(savingsResponse.ok()).toBeTruthy();
+  const savingsId = (await savingsResponse.json()).id as number;
+  const categoryResponse = await request.post("/api/categories", {
+    data: {
+      name: "Budget Dining",
+      kind: "expense",
+      parent_id: foodId,
+      color: "#b65d35",
+      icon: "🍴",
+      sort_order: 999,
+    },
+  });
+  expect(categoryResponse.ok()).toBeTruthy();
+  const diningId = (await categoryResponse.json()).id as number;
+
+  const expenses = [
+    { name: "Budget E2E groceries", amount_minor: 100000, category_id: groceriesId },
+    { name: "Budget E2E dining", amount_minor: 180000, category_id: diningId },
+  ];
+  for (const expense of expenses) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind: "expense",
+        account_id: accountId,
+        occurred_at: `${month}-10T12:00:00`,
+        ...expense,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+  const incomeResponse = await request.post("/api/transactions", {
+    data: {
+      kind: "income",
+      account_id: accountId,
+      amount_minor: 500000,
+      name: "Budget E2E income",
+      occurred_at: `${month}-11T12:00:00`,
+    },
+  });
+  expect(incomeResponse.ok()).toBeTruthy();
+  const transferResponse = await request.post("/api/transfers", {
+    data: {
+      from_account_id: accountId,
+      to_account_id: savingsId,
+      amount_minor: 100000,
+      name: "Budget E2E transfer",
+      occurred_at: `${month}-12T12:00:00`,
+    },
+  });
+  expect(transferResponse.ok()).toBeTruthy();
+
+  await page.reload();
+  await page.getByTestId("nav-budgets").click();
+  await page.getByTestId("budget-month").fill(month);
+  const foodRow = page.getByTestId(`budget-row-${foodId}`);
+  const diningRow = page.getByTestId(`budget-row-${diningId}`);
+  await expect(foodRow).toBeVisible();
+  await expect(diningRow).toBeVisible();
+
+  await foodRow.getByRole("button", { name: "Set limit", exact: true }).click();
+  await page.getByTestId("budget-limit-amount").fill("5000");
+  await page.getByTestId("save-budget-limit").click();
+  await expect(foodRow.getByTestId(`budget-limit-${foodId}`)).toContainText("5,000.00");
+
+  await diningRow.getByRole("button", { name: "Set limit", exact: true }).click();
+  await page.getByTestId("budget-limit-amount").fill("1500");
+  await page.getByTestId("save-budget-limit").click();
+  await expect(page.getByTestId("budget-total-spent")).toContainText("2,800.00");
+  await expect(foodRow.getByTestId(`budget-spent-${foodId}`)).toContainText("2,800.00");
+  await expect(foodRow.getByTestId(`budget-remaining-${foodId}`)).toContainText("2,200.00 left");
+  await expect(diningRow.getByTestId(`budget-spent-${diningId}`)).toContainText("1,800.00");
+  await expect(diningRow.getByTestId(`budget-remaining-${diningId}`)).toContainText("300.00 over");
+  await expect(diningRow.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuetext",
+    "120% of limit used",
+  );
+
+  await foodRow.getByRole("button", { name: "Edit limit", exact: true }).click();
+  await page.getByTestId("budget-limit-amount").fill("4000");
+  await page.getByTestId("save-budget-limit").click();
+  await expect(foodRow.getByTestId(`budget-remaining-${foodId}`)).toContainText("1,200.00 left");
+
+  await page.reload();
+  await page.getByTestId("nav-budgets").click();
+  await expect(page.getByTestId("budget-month")).toHaveValue(defaultMonth);
+  await page.getByTestId("budget-month").fill(month);
+  await expect(foodRow.getByTestId(`budget-limit-${foodId}`)).toContainText("4,000.00");
+  await expect(diningRow.getByTestId(`budget-limit-${diningId}`)).toContainText("1,500.00");
+
+  await page.getByTestId("budget-month").fill(nextMonth);
+  await expect(page.getByTestId("budget-total-spent")).toContainText("0.00");
+  await expect(foodRow.getByTestId(`budget-limit-${foodId}`)).toHaveText("No limit");
+  await expect(diningRow.getByTestId(`budget-limit-${diningId}`)).toHaveText("No limit");
+  await page.getByTestId("budget-month").fill(month);
+
+  const archiveResponse = await request.delete(`/api/categories/${diningId}`);
+  expect(archiveResponse.ok()).toBeTruthy();
+  expect((await archiveResponse.json()).archived).toBe(true);
+  await page.reload();
+  await page.getByTestId("nav-budgets").click();
+  await page.getByTestId("budget-month").fill(month);
+  await expect(diningRow).toContainText("Archived");
+  await expect(diningRow.getByTestId(`budget-spent-${diningId}`)).toContainText("1,800.00");
+  await expect(diningRow.getByTestId(`budget-limit-${diningId}`)).toContainText("1,500.00");
+  await expect(diningRow.getByTestId(`budget-remaining-${diningId}`)).toContainText("300.00 over");
+
+  await diningRow.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(diningRow.getByTestId(`budget-limit-${diningId}`)).toHaveText("No limit");
+  await expect(diningRow.getByTestId(`budget-spent-${diningId}`)).toContainText("1,800.00");
+  await expect(diningRow.getByRole("button", { name: "Set limit", exact: true })).toBeDisabled();
 });

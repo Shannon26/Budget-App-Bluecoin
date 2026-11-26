@@ -2,7 +2,7 @@
 
 ## Scope and evidence boundary
 
-This document records what REA confirmed from the supplied Bluecoins APK and what remains unknown. Static decompiler observations are not runtime observations. The Android phone was available earlier in the session, but it disconnected before the read-only capture batch; no sample-data UI flow was observed.
+This document records what REA confirmed from the supplied Bluecoins APK and what remains unknown. Static decompiler observations are not runtime observations. Later ADB/REA runtime walkthroughs, including the demo CSV export, are recorded separately in [`bluecoins-walkthrough.md`](bluecoins-walkthrough.md).
 
 Target artifact:
 
@@ -66,17 +66,17 @@ These are choices for the new app, not claims about Bluecoins internals:
 3. How are multi-currency transfers converted, and when is the conversion rate captured?
 4. How do transfer fees affect the destination amount, account balances, and expense reports?
 5. What are the exact report filters that exclude transfers from income/expense totals? The enum and paired model support the design, but runtime report behavior was not observed.
-6. How do splits, recurring transactions, budgets, reminders, and import/export behave end to end?
+6. How do splits, recurring transactions, reminders, and imports behave end to end? CSV export and the budget table/month controls were later observed at runtime; CSV import and Bluecoins' internal budget storage remain unverified.
 7. What default accounts/categories does normal onboarding create compared with the demo data set, and what happens to demo data when “Exit Demo” is chosen?
 8. Which UI labels, validation messages, and edit/delete undo flows should be mirrored for long-term parity?
 
 ## Next milestone backlog
 
-- Budgets and budget progress.
+- Budget recurrence/custom-period internals beyond the observed monthly table and preset month switching; Paisa monthly category budgets are implemented.
 - Split transactions.
 - Recurring transactions and reminders.
 - Reports and date-range filters.
-- Import/export, including Bluecoins-compatible CSV.
+- CSV/QIF import and backup/restore; CSV export is implemented and documented in the runtime walkthrough.
 - Account editing/archiving and transaction edit/delete.
 - Categories, labels, attachments, and transaction status.
 - Multi-currency accounts, conversion rates, and transfer fees.

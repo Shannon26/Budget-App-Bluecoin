@@ -1,6 +1,6 @@
-# Paisa — categories and transaction management
+# Paisa — transactions, categories, CSV export, and monthly budgets
 
-An original, local-first budgeting web app. Milestone 2 adds a seeded category catalog, date-grouped ledger, transaction detail/edit/duplicate/permanent delete, manual reconciliation, saved filters, account history, and atomic transfer management. Bluecoins remains the long-term parity reference; see [`docs/bluecoins-parity.md`](docs/bluecoins-parity.md) and [`docs/bluecoins-walkthrough.md`](docs/bluecoins-walkthrough.md).
+An original, local-first budgeting web app. It includes a seeded category catalog, date-grouped ledger, transaction management, reconciliation, saved filters, account history, atomic transfers, Rust-generated CSV export, and month-specific category budgets. Bluecoins remains the long-term parity reference; see [`docs/bluecoins-parity.md`](docs/bluecoins-parity.md) and [`docs/bluecoins-walkthrough.md`](docs/bluecoins-walkthrough.md).
 
 ## Stack
 
@@ -61,6 +61,8 @@ Stop either process with `Ctrl+C`.
 - Daily totals cover all matching transactions for that day, including entries not yet loaded.
 - Search by name/note and filters for date, account, category, reconciliation status, amount range, and uncategorized entries.
 - Named filters persist in SQLite and can be reopened after reload.
+- **Download CSV** exports all transactions matching the applied filters, including rows beyond the first 200 and filters reopened from a saved view.
+- **Budgets** provides independent monthly limits for expense categories and subcategories, parent rollups, progress, remaining/over states, and historical archived-category visibility.
 - Detail view with edit, duplicate, manual Reconciled toggle, and explicit permanent-delete confirmation.
 - One combined transfer row in the main ledger; account history shows only the relevant transfer side.
 - Transfer create/edit/delete updates both legs atomically and never changes income/expense totals.
@@ -80,6 +82,8 @@ The repeatable browser test uses a clean database and verifies:
 9. Transfer ₹500, verify one main-ledger row and correct account-history direction, edit it to ₹600, then delete it.
 10. Verify both accounts update together and income/expense totals remain unchanged.
 11. With 201 same-day ₹1 expenses, verify the first page shows a ₹201 daily total and Load more reaches all 201 entries without gaps or duplicates.
+12. Download the filtered ledger while only 200 rows are loaded and verify the CSV contains all 201; reopen a saved filter and verify its export, one-row transfers, Uncategorized fallback, special-character quoting, and spreadsheet-formula protection.
+13. Set monthly parent/subcategory budgets, verify ₹2,800 parent spending and ₹300 child overage, switch months, reload persisted limits, and retain archived category history.
 
 ## Tests and production build
 
@@ -123,6 +127,9 @@ The backend suite covers:
 - moving childless categories without changing transaction assignments;
 - search/date/account/category/status/amount filters;
 - stable ledger/account-history pagination and full-day totals for the 201-entry regression;
+- CSV export of all 201 filtered rows despite `limit`/`offset`, exact INR formatting, quoting, formula protection, archived category names, Uncategorized fallback, and one combined transfer row;
+- transaction/transfer date validation with no writes on rejection, plus blank CSV dates for invalid legacy timestamps;
+- monthly budget validation, parent/child rollups, independent month limits, overall de-duplication, Uncategorized inclusion, archive history, month/leap-day boundaries, and edit/delete recalculation;
 - saved-filter persistence and reconciliation filtering;
 - one combined transfer row and relevant account-history sides;
 - transfer edit/delete updating both accounts without changing totals;
@@ -143,6 +150,7 @@ All amounts are integer minor units.
 | `POST` | `/api/accounts` | Create an INR account with opening balance |
 | `GET` | `/api/accounts/:id/history` | Paginated account-specific ledger with relevant transfer side and full-day totals |
 | `GET` | `/api/ledger` | Paginated filtered combined ledger with full-day totals; supports `limit` and `offset` |
+| `GET` | `/api/ledger/export` | UTF-8 CSV of every transaction matching the same filter query parameters; ignores `limit` and `offset` |
 | `POST` | `/api/transactions` | Create income/expense |
 | `GET/PUT/DELETE` | `/api/transactions/:id` | Detail/edit/permanent delete |
 | `POST` | `/api/transactions/:id/duplicate` | Duplicate transaction |
@@ -153,6 +161,9 @@ All amounts are integer minor units.
 | `PATCH` | `/api/transfers/:id/reconciliation` | Reconcile both legs |
 | `GET/POST` | `/api/categories` | List/create categories |
 | `PUT/DELETE` | `/api/categories/:id` | Edit/archive or delete category |
+| `GET` | `/api/category-budgets?month=YYYY-MM` | Monthly expense spending, category rollups, limits, remaining/over amounts, and archived categories |
+| `PUT` | `/api/category-budgets/:category_id?month=YYYY-MM` | Create/update a monthly category limit from `{ "amount_minor": 500000 }` |
+| `DELETE` | `/api/category-budgets/:category_id?month=YYYY-MM` | Remove a monthly category limit |
 | `GET/POST` | `/api/filters` | List/create named filters |
 | `PUT/DELETE` | `/api/filters/:id` | Update/delete named filter |
 
@@ -170,6 +181,65 @@ Example transaction:
 }
 ```
 
+## Using monthly budgets
+
+1. Open **Budgets**. The selected month defaults to the current local calendar month.
+2. Use the month picker or arrow buttons to view another month.
+3. Click **Set limit** on an expense category or subcategory, enter a positive INR amount, and save. **Edit limit** changes it; **Remove** deletes only that month's limit.
+4. Each row shows its limit, spending, remaining or over amount, percentage used, and a progress bar.
+
+Budget rules:
+
+- Limits are stored independently per `(category, YYYY-MM)` in integer paise and are not copied into future months.
+- A parent row's spending includes expenses assigned directly to the parent plus expenses assigned to all of its subcategories. Each subcategory keeps its own independent limit.
+- **Monthly spending** sums each expense exactly once. It is not the sum of parent and child rows. Uncategorized expenses are included; income and transfers are excluded.
+- Archived categories remain visible with their historical limits and spending. Existing archived limits can be edited or removed, but a new limit cannot be added to an archived category.
+- Month boundaries use validated calendar dates and a half-open range, so the last instant of one month and the first of the next are not double-counted. Transaction edits, deletions, and category hierarchy changes are reflected when budgets are loaded.
+- Progress is capped visually at 100%, while the percentage and **over** amount continue to show the true excess.
+
+For example, when **Dining Out** is a child of **Food & Drink**, a ₹5,000 Food & Drink limit and a ₹1,500 Dining Out limit with ₹1,000 groceries and ₹1,800 dining show:
+
+- Food & Drink: **₹2,800.00 spent**, **₹2,200.00 left**.
+- Dining Out: **₹1,800.00 spent**, **₹300.00 over**.
+- Overall monthly spending: **₹2,800.00**, not ₹4,600.00.
+
+## Downloading CSV
+
+1. Open **Ledger**.
+2. Apply the desired search, date, account, category, status, amount, or Uncategorized filter. Reopening a saved filter also updates the applied filter.
+3. Click **Download CSV**. The browser saves `paisa-ledger.csv`.
+
+The export uses the **applied** filter, not unfinished edits in the filter form. It includes every matching transaction, even when the on-screen ledger has loaded only its first 200 rows. The button is available on the main ledger, not account history. CSV export itself requires no schema changes.
+
+The Rust backend returns `text/csv; charset=utf-8` with an attachment filename. The file has this stable header order:
+
+```text
+Date,Type,Name,Account,Source Account,Destination Account,Category,Subcategory,Amount,Currency,Status,Note
+```
+
+| Column | Meaning |
+| --- | --- |
+| `Date` | Transaction date in `YYYY-MM-DD` form; blank if a legacy stored timestamp is invalid. |
+| `Type` | `Income`, `Expense`, or `Transfer`. |
+| `Name` | Transaction/transfer name. |
+| `Account` | Account for income/expenses; blank for transfers. |
+| `Source Account` | Transfer source; blank for income/expenses. |
+| `Destination Account` | Transfer destination; blank for income/expenses. |
+| `Category` | Parent category, top-level category, or `Uncategorized`; blank for transfers. |
+| `Subcategory` | Child category when assigned; otherwise blank. |
+| `Amount` | Positive INR magnitude with exactly two decimal places and no thousands separator. Direction comes from `Type`. |
+| `Currency` | Always `INR`. |
+| `Status` | `Reconciled` or `Unreconciled`. |
+| `Note` | Transaction/transfer note. |
+
+Each transfer is exported **once**, with both account endpoints, so rows of type `Transfer` can be excluded from income and spending totals. Archived categories retain their stored names on historical entries. Income and expenses without a category use `Uncategorized`.
+
+Commas, quotes, and line breaks are CSV-quoted and round-trip correctly. User-controlled text that begins with a spreadsheet formula marker (`=`, `+`, `-`, or `@`, including after leading whitespace) receives a leading apostrophe. This is intentional spreadsheet-injection protection; for example, `=SUM(1,2)` exports as `'=SUM(1,2)`.
+
+Transaction and transfer saves validate `occurred_at` before writing. Accepted forms are `YYYY-MM-DD`, local ISO date-times such as `2026-11-20T12:00:00` (optional fractional seconds), and RFC3339 date-times with `Z` or an offset. Invalid values return HTTP 400 and leave existing data unchanged. Invalid legacy timestamps are not rewritten; their CSV `Date` cell is blank so arbitrary text cannot break the date format or become a spreadsheet formula.
+
+CSV import is not implemented.
+
 ## Data model and migration safety
 
 - `accounts`: name, INR currency, opening balance, creation timestamp.
@@ -177,10 +247,13 @@ Example transaction:
 - `entries`: income, expense, transfer_in, or transfer_out; positive amount; name/note; optional category; reconciled flag; optional transfer link.
 - `transfers`: source/destination, positive amount, name/note, reconciled flag, timestamps.
 - `saved_filters`: named JSON filter definitions.
+- `category_budgets`: one positive integer-paise limit per category and calendar month, with a composite uniqueness constraint.
 
 Migration `002_categories_and_ledger.sql` is additive: it preserves all existing accounts, entries, transfers, amounts, and links. Existing entries receive an empty/default name, null category, and unreconciled status; existing transfer names default from their notes. Balances continue to derive from opening balances plus ledger entries.
 
 Migration `003_fix_dining_category.sql` moves the existing **Dining Out** category from **Food & Drink** to **Entertainment** to match the observed Bluecoins taxonomy. It changes only the parent pointer, so historical transaction assignments and category totals remain intact.
+
+Migration `004_category_budgets.sql` is additive. It creates only the monthly budget table and index, leaves all ledger/account/category data untouched, and cascades budget rows only when an otherwise unreferenced category is permanently deleted.
 
 A manual upgrade check migrated a Milestone-1-shaped database containing two accounts, income, expense, and a transfer. Before/after values were preserved exactly: balances `82500` and `45000`, income `10000`, expense `2500`, one combined transfer row, and legacy entries shown as Uncategorized.
 
@@ -194,26 +267,27 @@ rm -f backend/budget.db backend/budget.db-wal backend/budget.db-shm
 
 Restart with the startup command above.
 
-## Verified Milestone 2 result
+## Verified result
 
 Verified on 2026-11-26:
 
-- `cargo test`: **17 passed; 0 failed**
+- `cargo test`: **29 passed; 0 failed**
 - `npm test`: **7 passed; 0 failed**
 - `npm run build`: **passed**
 - `npm audit`: **0 vulnerabilities**
-- `./frontend/scripts/e2e.sh`: **3 passed** — hierarchy editor rules, full Milestone 2 flow, and the 201-entry Load more regression
+- `./frontend/scripts/e2e.sh`: **5 passed** — hierarchy editor rules, full Milestone 2 flow, CSV regressions, and monthly budget persistence/rollup/archive behavior
+- Bluecoins runtime export: **628 demo rows** observed through ADB; workflow and fields recorded in [`docs/bluecoins-walkthrough.md`](docs/bluecoins-walkthrough.md)
+- Bluecoins runtime budget table: parent/child limits, spent, remaining, over-budget, progress, and Last Month switching observed through ADB
 - Manual Milestone-1 → Milestone-2 migration check: balances, totals, and transfer legs preserved
 
 ## Later milestones / explicit deferrals
 
 1. Account types/groups, liabilities, and credit-card account fields
-2. Overall and hierarchical category budgets
-3. Net earnings, items/labels reports, balance sheet, and calendar
-4. **Recurring reminders** — due reminders that wait for approval before posting
-5. Splits and attachments
-6. Multi-currency totals/conversion and **transfer fees** as separate expenses
-7. **CSV export** first, then other import/export and backup work
-8. **Paisa MCP** read-only agent access behind the Rust application layer
-9. Evaluate any **database switch** only after deployment/concurrency requirements are known
-10. Sync, travel mode, biometric security, notifications, and dashboard customization
+2. Net earnings, items/labels reports, balance sheet, and calendar
+3. **Recurring reminders** — due reminders that wait for approval before posting
+4. Splits and attachments
+5. Multi-currency totals/conversion and **transfer fees** as separate expenses
+6. **CSV import**, QIF import, and backup/restore work
+7. **Paisa MCP** read-only agent access behind the Rust application layer
+8. Evaluate any **database switch** only after deployment/concurrency requirements are known
+9. Sync, travel mode, biometric security, notifications, and dashboard customization

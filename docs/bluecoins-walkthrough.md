@@ -17,14 +17,14 @@ Detailed static findings remain in [`bluecoins-parity.md`](bluecoins-parity.md).
 | --- | --- | --- |
 | Onboarding | Welcome screen, language selector, currency picker, “Add First Transaction”, and “Run Demo”. The initial currency defaulted to GBP before INR was selected. | A first-run setup flow and explicit currency choice matter. Our milestone intentionally stays INR-only until totals are currency-aware. |
 | Main dashboard | Daily Summary bar chart with 7/30-day expense averages; Budget Summary donut and progress; calendar card; cash-flow comparison; Net Worth trend; Favorite Accounts; Balance Sheet shortcut. | The home screen is a composable dashboard, not just a balance list. Cards can be added incrementally. |
-| Transactions | Date-grouped list with daily totals, category icons, reconciled checkmarks, account running balances, and two rows for a transfer pair. Search, bulk edit, and print actions are present. | A real ledger needs grouping, drill-down, and paired transfer display. |
+| Transactions | Date-grouped list with daily totals, category icons, reconciled checkmarks, account running balances, and two rows for a transfer pair. Search, bulk edit, and print actions are present. Print offers PDF/printer, Excel (.csv), and HTML output. | A real ledger needs grouping, drill-down, and paired transfer display. CSV export belongs with the transaction list and its active view. |
 | Expense detail | Name, date/time, signed amount, parent/child category, account type/name, reconciled status, similar transactions, duplicate, print, delete, and edit. | Detail and edit/delete/duplicate are high-value parity features. |
 | Transaction editor | Name, date/time, schedule, amount with calculator, currency, category, account, split, status, label, note, attachment, expense/income/transfer mode, and save. | The transaction form is the central workflow; fields can be introduced in stages. |
 | Transfer editor | From/to account rows, swap control, transfer fee, status, label, note, and transfer mode. | Transfer fees and explicit direction are separate from basic atomic transfers. |
 | Transfer detail | Bank Checking → Credit Card Credit Card, ₹68.91, reconciled, duplicate/edit/print/delete. The list shows both the outgoing and incoming legs. | Our two-leg transfer model matches the visible paired behavior. |
 | Reminders | Scheduled/recurring entries grouped by due date, “Due tomorrow/in 2 days”, recurrence text, labels, account balances, and daily totals. | Recurring transactions deserve a first-class schedule model and reminder queue. |
 | Balance Sheet | Timeline date selector, prior/current columns, assets and liabilities grouped by account type, percentage contribution, expandable groups, mortgages, and net worth. | Account types and liability semantics are prerequisites for a useful balance sheet. |
-| Budget | Monthly period, overall expense budget, hierarchical category budgets, spent/remaining/over amounts, progress bars, and “today” marker. | Budgets should support parent rollups and category-level limits. |
+| Budget | Monthly period, overall expense budget, hierarchical category budgets, spent/remaining/over amounts, progress bars, and “today” marker. The table view and Last Month preset were rechecked during the budget runtime pass below. | Budgets need reusable monthly aggregation, independent category limits, and clear rollup semantics. |
 | Net Earnings | Expense, income, and net earnings sections with prior/current month comparison, category hierarchy, percentages, and trend arrows. | Reports need reusable aggregation and period comparison. |
 | Items Summary | Ranked income and expense item names with proportional bars for the selected month. | Item/payee aggregation is a lightweight report to add after categories. |
 | Labels | Period-based label totals including “No Labels”, with income/expense bars. | Labels are independent of categories and useful for cross-category reporting. |
@@ -33,8 +33,31 @@ Detailed static findings remain in [`bluecoins-parity.md`](bluecoins-parity.md).
 | New/Edit account | Name, note, starting balance, calculator, currency, opening date, account type, hide-from-selection/reports toggles. Credit-card accounts add credit limit, cutoff day, due date, latest balance, and transaction-list shortcut. | Account editing is richer than our current create-only form. |
 | Categories | Expense and income hierarchies with icons and monthly budget amounts. Category drill-down shows period total, transaction table, chart toggle, edit/filter/print, and add-transaction action. | Categories should be modeled before budgets or category reports. |
 | Filters | Search item/payee/notes, amount from/to, account, labels, status, reset/save/open saved filter. | A reusable filter specification will serve transactions and reports. |
-| Settings / data | Localization, currency/date, appearance, data management, online sync, transaction setup, calendar, notifications, password/fingerprint. Data Management offers Phone Storage, CSV import, QIF import, and reset. | Import/export and security are later milestones; CSV parity should reuse the documented import fields. |
+| Settings / data | Localization, currency/date, appearance, data management, online sync, transaction setup, calendar, notifications, password/fingerprint. Data Management offers Phone Storage, CSV import, QIF import, and reset. In this demo, CSV export was reached from Transactions → Print rather than Data Management. | Keep export beside the ledger and preserve the documented import field vocabulary for future import work. |
 | Navigation | Main, Calendar, Accounts, Categories, Labels, Trash, Settings, QuickSync, Travel Mode, feedback/support links. | The app has a broad management surface beyond the dashboard tabs. |
+
+## CSV export runtime observation
+
+Observed on 2026-11-26 with the connected <android-device> and the existing Bluecoins **Demo** data. No reset, deletion, purchase, sync, or real-data import was performed.
+
+- **Workflow:** Main → Transactions → Print → Excel (.csv) → choose the app's `Bluecoin/Reports` folder → Save. Bluecoins first required a default application folder, then wrote `Transactions.csv` and displayed its path with Cancel, Share link, and Open actions.
+- **Artifact:** the pulled demo export was 84,494 bytes, UTF-8 with a BOM, and contained **628 data rows**: 386 Expense, 76 Income, and 166 Transfer rows.
+- **Headers:** `Type, Date, Set Time, Name, Amount, Currency, Exchange Rate, Category Group, Category, Account, Notes, Grouping, Labels, Status`.
+- **Values:** dates included time, currency was INR, expenses used negative amounts, income used positive amounts, and status was `Reconciled` or `None`. Category Group/Category preserved the visible hierarchy, such as Entertainment/Dining Out.
+- **Transfers:** Bluecoins exported two rows per transfer, one negative and one positive, each with its own `Account`. The 166 Transfer rows therefore represented 83 paired transfers. It did not provide separate source/destination columns.
+- **Paisa decision:** retain the familiar type/date/name/account/category/status/note vocabulary, but export each transfer once as `Transfer` with explicit Source Account and Destination Account columns. Paisa uses positive amount magnitudes with type-based direction and adds formula-prefix protection; those are Paisa design choices, not observed Bluecoins behavior.
+- **Boundary:** this was an unfiltered runtime export of the demo. Filter-specific export, CSV import, spreadsheet formula handling, and Bluecoins' internal serialization code were not observed. The actual exported artifact was sufficient to establish the workflow and fields, so no additional REA decompilation was needed.
+
+## Budget runtime observation
+
+Observed on 2026-11-26 with the connected <android-device> and the existing Bluecoins **Demo** data. No budget values or transactions were changed.
+
+- **Category limits:** the Categories screen lists parent and child categories with monthly amounts. The category editor exposes **Enable budgeting**, **Frequency = Monthly**, and **Budget** fields.
+- **Budget table:** Main → Budget Summary → Budget Report → Table shows an overall expense limit and hierarchical category rows with spent amount, percentage used, progress, and either `left from` or `over` wording.
+- **October / Last Month example:** overall expense spending was ₹1,055.37, 35% of ₹3,024, with ₹1,968.63 left. Entertainment spent ₹366.27 against ₹640 (57%), leaving ₹273.73. Its Dining Out child spent ₹294.12 against ₹176 (167%), showing ₹118.12 over. Movies had a ₹272 limit, ₹0.00 spent, and ₹272.00 left.
+- **Current month example:** the dashboard's November Budget Summary showed ₹924.86 spent, 31% of ₹3,024, with ₹2,099.14 left.
+- **Month switching:** Budget Report's Date Range control offers presets including Last Month, This Month, Last 30 Days, and custom ranges. Selecting Last Month changed the report period; Chart and Table toggle the presentation.
+- **Paisa decisions:** use an explicit validated `YYYY-MM` month picker, store each category/month limit separately, roll direct parent plus descendant expenses into the parent row, keep child limits independent, and compute overall spending from raw expenses exactly once. Paisa also includes Uncategorized expenses in overall spending and retains archived categories in historical views. These are Paisa design choices; Bluecoins' internal storage and import/export behavior were not inspected.
 
 ## Recommended next milestone: categories and transaction management
 
@@ -105,7 +128,7 @@ This is the smallest next milestone that unlocks budgets, reports, reminders, an
 4. **Calendar and reminders** — calendar dots/day drill-down and recurring reminders that require approval before posting.
 5. **Splits and attachments** — split editor, receipt image/attachment metadata.
 6. **Multi-currency and fees** — per-currency reports, transfer conversion, and a separate expense on the account paying the transfer fee.
-7. **Data portability and agents** — CSV export first, followed by a Paisa MCP server for agent inspection. CSV/QIF import and backup/restore remain separate backlog items.
+7. **Data portability and agents** — CSV export is implemented; a Paisa MCP server for agent inspection is next. CSV/QIF import and backup/restore remain separate backlog items.
 8. **Sync, security, and polish** — QuickSync/Travel Mode, biometric lock, notifications, dashboard customization.
 
 ## Open Bluecoins research questions for later passes
@@ -113,7 +136,7 @@ This is the smallest next milestone that unlocks budgets, reports, reminders, an
 - How does Bluecoins handle category deletion when transactions already reference it?
 - What exact recurrence rules and timezone behavior does the reminder engine use?
 - How are transfer fees represented in reports and account balances?
-- Which fields are included in CSV/QIF export, and how are transfer pairs serialized?
+- CSV export fields and paired-transfer serialization were observed at runtime; QIF export remains unobserved.
 - How do saved filters, dashboard card customization, and report date ranges persist?
 - What is the normal-onboarding default data set versus demo-only sample data?
 

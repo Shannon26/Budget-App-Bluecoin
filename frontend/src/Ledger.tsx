@@ -329,6 +329,7 @@ export default function Ledger({
   const [selectedFilterId, setSelectedFilterId] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const loadPage = useCallback(async (offset = 0, append = false) => {
@@ -409,6 +410,26 @@ export default function Ledger({
       amount_min_minor: min,
       amount_max_minor: max,
     });
+  }
+
+  async function downloadCsv() {
+    setExporting(true);
+    try {
+      const blob = await api.downloadLedgerCsv(applied);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "paisa-ledger.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      onMessage("CSV downloaded with all matching entries.");
+    } catch (reason) {
+      onMessage(reason instanceof Error ? reason.message : "Could not export ledger", true);
+    } finally {
+      setExporting(false);
+    }
   }
 
   async function saveFilter() {
@@ -502,11 +523,24 @@ export default function Ledger({
           <p className="section-kicker">{historyAccount ? "Account history" : "All activity"}</p>
           <h2>{historyAccount ? historyAccount.name : "Ledger"}</h2>
         </div>
-        {historyAccount && (
-          <button className="text-button" type="button" onClick={onClearHistory}>
-            Back to full ledger
-          </button>
-        )}
+        <div className="ledger-heading-actions">
+          {!historyAccount && (
+            <button
+              className="secondary-button"
+              data-testid="download-csv"
+              type="button"
+              disabled={exporting}
+              onClick={() => void downloadCsv()}
+            >
+              {exporting ? "Preparing…" : "Download CSV"}
+            </button>
+          )}
+          {historyAccount && (
+            <button className="text-button" type="button" onClick={onClearHistory}>
+              Back to full ledger
+            </button>
+          )}
+        </div>
       </div>
 
       {!historyAccount && (

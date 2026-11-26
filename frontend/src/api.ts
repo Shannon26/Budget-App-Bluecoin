@@ -4,6 +4,7 @@ import type {
   FilterDefinition,
   LedgerEntry,
   LedgerPage,
+  MonthlyCategoryBudgets,
   SavedFilter,
   TransactionKind,
 } from "./types";
@@ -44,6 +45,15 @@ function filterQuery(filter: FilterDefinition): string {
 function ledgerPath(filter: FilterDefinition, offset: number): string {
   const query = filterQuery(filter);
   return `/ledger${query}${query ? "&" : "?"}limit=200&offset=${offset}`;
+}
+
+async function downloadCsv(path: string): Promise<Blob> {
+  const response = await fetch(`/api${path}`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error || "Could not export ledger");
+  }
+  return response.blob();
 }
 
 export const api = {
@@ -139,6 +149,8 @@ export const api = {
     }),
   ledger: (filter: FilterDefinition, offset = 0) =>
     request<LedgerPage>(ledgerPath(filter, offset)),
+  downloadLedgerCsv: (filter: FilterDefinition) =>
+    downloadCsv(`/ledger/export${filterQuery(filter)}`),
   categories: () => request<Category[]>("/categories"),
   createCategory: (input: {
     name: string;
@@ -169,6 +181,21 @@ export const api = {
     }),
   deleteCategory: (id: number) =>
     request<{ archived: boolean }>(`/categories/${id}`, { method: "DELETE" }),
+  categoryBudgets: (month: string) =>
+    request<MonthlyCategoryBudgets>(`/category-budgets?month=${encodeURIComponent(month)}`),
+  setCategoryBudget: (categoryId: number, month: string, amountMinor: number) =>
+    request<MonthlyCategoryBudgets>(
+      `/category-budgets/${categoryId}?month=${encodeURIComponent(month)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ amount_minor: amountMinor }),
+      },
+    ),
+  removeCategoryBudget: (categoryId: number, month: string) =>
+    request<MonthlyCategoryBudgets>(
+      `/category-budgets/${categoryId}?month=${encodeURIComponent(month)}`,
+      { method: "DELETE" },
+    ),
   createFilter: (input: { name: string; definition: FilterDefinition }) =>
     request<SavedFilter>("/filters", {
       method: "POST",

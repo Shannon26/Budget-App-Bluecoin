@@ -1,3 +1,5 @@
+mod csv;
+mod date;
 mod error;
 mod models;
 mod store;
@@ -7,6 +9,7 @@ mod tests;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, Method, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use error::AppResult;
@@ -174,6 +177,25 @@ async fn ledger(
     ))
 }
 
+async fn export_ledger(
+    State(state): State<AppState>,
+    Query(page): Query<LedgerPageQuery>,
+) -> AppResult<Response> {
+    let entries = state.store.ledger_entries(page.into_filter()).await?;
+    let body = csv::ledger_csv(&entries);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"paisa-ledger.csv\"",
+            ),
+        ],
+        body,
+    )
+        .into_response())
+}
+
 async fn list_categories(State(state): State<AppState>) -> AppResult<Json<Vec<Category>>> {
     Ok(Json(state.store.categories().await?))
 }
@@ -201,6 +223,42 @@ async fn delete_category(
     Path(id): Path<i64>,
 ) -> AppResult<Json<DeleteCategoryResponse>> {
     Ok(Json(state.store.delete_category(id).await?))
+}
+
+async fn list_category_budgets(
+    State(state): State<AppState>,
+    Query(query): Query<CategoryBudgetQuery>,
+) -> AppResult<Json<MonthlyCategoryBudgets>> {
+    Ok(Json(
+        state.store.monthly_category_budgets(&query.month).await?,
+    ))
+}
+
+async fn set_category_budget(
+    State(state): State<AppState>,
+    Path(category_id): Path<i64>,
+    Query(query): Query<CategoryBudgetQuery>,
+    Json(request): Json<CategoryBudgetRequest>,
+) -> AppResult<Json<MonthlyCategoryBudgets>> {
+    Ok(Json(
+        state
+            .store
+            .set_category_budget(category_id, &query.month, request.amount_minor)
+            .await?,
+    ))
+}
+
+async fn remove_category_budget(
+    State(state): State<AppState>,
+    Path(category_id): Path<i64>,
+    Query(query): Query<CategoryBudgetQuery>,
+) -> AppResult<Json<MonthlyCategoryBudgets>> {
+    Ok(Json(
+        state
+            .store
+            .remove_category_budget(category_id, &query.month)
+            .await?,
+    ))
 }
 
 async fn list_saved_filters(State(state): State<AppState>) -> AppResult<Json<Vec<SavedFilter>>> {
@@ -282,6 +340,7 @@ fn build_router(pool: SqlitePool) -> Router {
             axum::routing::patch(reconcile_transfer),
         )
         .route("/api/ledger", get(ledger))
+        .route("/api/ledger/export", get(export_ledger))
         .route(
             "/api/categories",
             get(list_categories).post(create_category),
@@ -289,6 +348,11 @@ fn build_router(pool: SqlitePool) -> Router {
         .route(
             "/api/categories/:id",
             axum::routing::put(update_category).delete(delete_category),
+        )
+        .route("/api/category-budgets", get(list_category_budgets))
+        .route(
+            "/api/category-budgets/:category_id",
+            axum::routing::put(set_category_budget).delete(remove_category_budget),
         )
         .route(
             "/api/filters",

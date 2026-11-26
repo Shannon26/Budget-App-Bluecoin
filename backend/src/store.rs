@@ -1,8 +1,9 @@
+use crate::date::{date_only, is_valid_month, is_valid_timestamp, month_bounds};
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::Utc;
 use sqlx::{Executor, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Store {
@@ -59,6 +60,12 @@ impl Store {
                 let value = value.trim().to_string();
                 if value.chars().count() > 40 {
                     return Err(AppError::BadRequest("occurred_at is too long".to_string()));
+                }
+                if !is_valid_timestamp(&value) {
+                    return Err(AppError::BadRequest(
+                        "occurred_at must be a valid date in YYYY-MM-DD or ISO 8601 date-time format"
+                            .to_string(),
+                    ));
                 }
                 Ok(value)
             }
@@ -587,11 +594,7 @@ impl Store {
         }
     }
 
-    fn build_page(
-        mut entries: Vec<LedgerEntry>,
-        limit: Option<usize>,
-        offset: Option<usize>,
-    ) -> LedgerPage {
+    fn order_entries(entries: &mut [LedgerEntry]) {
         entries.sort_by(|left, right| {
             right
                 .occurred_at
@@ -599,6 +602,14 @@ impl Store {
                 .then(right.id.cmp(&left.id))
                 .then(left.kind.cmp(&right.kind))
         });
+    }
+
+    fn build_page(
+        mut entries: Vec<LedgerEntry>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> LedgerPage {
+        Self::order_entries(&mut entries);
         let total_count = entries.len();
         let mut totals = BTreeMap::<String, DailyTotal>::new();
         for entry in &entries {
@@ -635,12 +646,7 @@ impl Store {
         }
     }
 
-    pub async fn ledger(
-        &self,
-        filter: FilterDefinition,
-        limit: Option<usize>,
-        offset: Option<usize>,
-    ) -> AppResult<LedgerPage> {
+    pub async fn ledger_entries(&self, filter: FilterDefinition) -> AppResult<Vec<LedgerEntry>> {
         Self::validate_filter(&filter)?;
         let mut entries_query = QueryBuilder::<Sqlite>::new(
             "SELECT e.id, e.kind, e.name, e.note, e.account_id, a.name AS account_name,
@@ -679,7 +685,21 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         entries.extend(transfers);
-        Ok(Self::build_page(entries, limit, offset))
+        Self::order_entries(&mut entries);
+        Ok(entries)
+    }
+
+    pub async fn ledger(
+        &self,
+        filter: FilterDefinition,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> AppResult<LedgerPage> {
+        Ok(Self::build_page(
+            self.ledger_entries(filter).await?,
+            limit,
+            offset,
+        ))
     }
 
     pub async fn account_history(
@@ -799,6 +819,243 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::from)
+    }
+
+    fn validate_budget_month(month: &str) -> AppResult<()> {
+        if !is_valid_month(month) {
+            return Err(AppError::BadRequest(
+                "month must be a valid calendar month in YYYY-MM format".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn budget_category(&self, category_id: i64) -> AppResult<(String, Option<String>)> {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT kind, archived_at FROM categories WHERE id = ?",
+        )
+        .bind(category_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("category {category_id} was not found")))
+    }
+
+    fn validate_budget_category(
+        category_id: i64,
+        category: &(String, Option<String>),
+        existing_limit: Option<i64>,
+    ) -> AppResult<()> {
+        if category.0 != "expense" {
+            return Err(AppError::BadRequest(
+                "budgets can only be set for expense categories".to_string(),
+            ));
+        }
+        if category.1.is_some() && existing_limit.is_none() {
+            return Err(AppError::BadRequest(format!(
+                "archived category {category_id} cannot receive a new budget"
+            )));
+        }
+        Ok(())
+    }
+
+    pub async fn monthly_category_budgets(&self, month: &str) -> AppResult<MonthlyCategoryBudgets> {
+        Self::validate_budget_month(month)?;
+        let (first_day, next_month) = month_bounds(month)
+            .ok_or_else(|| AppError::BadRequest("month must be in YYYY-MM format".to_string()))?;
+        let expenses = sqlx::query_as::<_, (Option<i64>, i64, String)>(
+            "SELECT category_id, amount_minor, occurred_at
+             FROM entries
+             WHERE kind = 'expense'
+               AND substr(occurred_at, 1, 10) >= ?
+               AND substr(occurred_at, 1, 10) < ?",
+        )
+        .bind(first_day)
+        .bind(next_month)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut direct_spend = HashMap::<i64, i64>::new();
+        let mut total_spent_minor = 0_i64;
+        let mut uncategorized_spent_minor = 0_i64;
+        let mut expense_count = 0_i64;
+        for (category_id, amount_minor, occurred_at) in expenses {
+            let Some(date) = date_only(&occurred_at) else {
+                continue;
+            };
+            if !date.starts_with(month) {
+                continue;
+            }
+            total_spent_minor += amount_minor;
+            expense_count += 1;
+            if let Some(category_id) = category_id {
+                *direct_spend.entry(category_id).or_default() += amount_minor;
+            } else {
+                uncategorized_spent_minor += amount_minor;
+            }
+        }
+
+        let all_categories = self.categories().await?;
+        let expense_categories: Vec<Category> = all_categories
+            .into_iter()
+            .filter(|category| category.kind == "expense")
+            .collect();
+        let category_by_id = expense_categories
+            .iter()
+            .map(|category| (category.id, category.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut children = HashMap::<i64, Vec<i64>>::new();
+        let mut roots = Vec::new();
+        for category in &expense_categories {
+            if let Some(parent_id) = category.parent_id {
+                children.entry(parent_id).or_default().push(category.id);
+            } else {
+                roots.push(category.id);
+            }
+        }
+        let compare_ids = |left: &i64, right: &i64| {
+            let left = category_by_id.get(left).unwrap();
+            let right = category_by_id.get(right).unwrap();
+            left.sort_order
+                .cmp(&right.sort_order)
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.id.cmp(&right.id))
+        };
+        roots.sort_by(compare_ids);
+        for siblings in children.values_mut() {
+            siblings.sort_by(compare_ids);
+        }
+
+        let mut ordered_ids = Vec::new();
+        let mut visited = HashSet::new();
+        let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
+        while let Some(category_id) = stack.pop() {
+            if !visited.insert(category_id) {
+                continue;
+            }
+            ordered_ids.push(category_id);
+            if let Some(siblings) = children.get(&category_id) {
+                stack.extend(siblings.iter().rev().copied());
+            }
+        }
+        // Preserve legacy orphan/cycle branches instead of hiding their spending.
+        for category in &expense_categories {
+            if !visited.contains(&category.id) {
+                ordered_ids.push(category.id);
+                visited.insert(category.id);
+            }
+        }
+
+        let limits = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT category_id, amount_minor FROM category_budgets WHERE month = ?",
+        )
+        .bind(month)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+        let categories = ordered_ids
+            .into_iter()
+            .filter_map(|category_id| category_by_id.get(&category_id).cloned())
+            .map(|category| {
+                let direct = direct_spend.get(&category.id).copied().unwrap_or_default();
+                let spent = Self::rolled_category_spend(category.id, &direct_spend, &children);
+                let limit = limits.get(&category.id).copied();
+                CategoryBudget {
+                    category_id: category.id,
+                    name: category.name,
+                    parent_id: category.parent_id,
+                    parent_name: category.parent_name,
+                    color: category.color,
+                    icon: category.icon,
+                    sort_order: category.sort_order,
+                    archived_at: category.archived_at,
+                    limit_minor: limit,
+                    direct_spent_minor: direct,
+                    spent_minor: spent,
+                    remaining_minor: limit.map(|limit| limit - spent),
+                }
+            })
+            .collect();
+
+        Ok(MonthlyCategoryBudgets {
+            month: month.to_string(),
+            total_spent_minor,
+            uncategorized_spent_minor,
+            expense_count,
+            categories,
+        })
+    }
+
+    fn rolled_category_spend(
+        category_id: i64,
+        direct_spend: &HashMap<i64, i64>,
+        children: &HashMap<i64, Vec<i64>>,
+    ) -> i64 {
+        let mut stack = vec![category_id];
+        let mut visited = HashSet::new();
+        let mut total = 0_i64;
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            total += direct_spend.get(&current).copied().unwrap_or_default();
+            if let Some(descendants) = children.get(&current) {
+                stack.extend(descendants.iter().copied());
+            }
+        }
+        total
+    }
+
+    pub async fn set_category_budget(
+        &self,
+        category_id: i64,
+        month: &str,
+        amount_minor: i64,
+    ) -> AppResult<MonthlyCategoryBudgets> {
+        Self::validate_budget_month(month)?;
+        Self::validate_amount(amount_minor)?;
+        let category = self.budget_category(category_id).await?;
+        let existing_limit = sqlx::query_scalar::<_, i64>(
+            "SELECT amount_minor FROM category_budgets WHERE category_id = ? AND month = ?",
+        )
+        .bind(category_id)
+        .bind(month)
+        .fetch_optional(&self.pool)
+        .await?;
+        Self::validate_budget_category(category_id, &category, existing_limit)?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO category_budgets (category_id, month, amount_minor, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(category_id, month) DO UPDATE SET
+                 amount_minor = excluded.amount_minor,
+                 updated_at = excluded.updated_at",
+        )
+        .bind(category_id)
+        .bind(month)
+        .bind(amount_minor)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.monthly_category_budgets(month).await
+    }
+
+    pub async fn remove_category_budget(
+        &self,
+        category_id: i64,
+        month: &str,
+    ) -> AppResult<MonthlyCategoryBudgets> {
+        Self::validate_budget_month(month)?;
+        let category = self.budget_category(category_id).await?;
+        Self::validate_budget_category(category_id, &category, Some(0))?;
+        sqlx::query("DELETE FROM category_budgets WHERE category_id = ? AND month = ?")
+            .bind(category_id)
+            .bind(month)
+            .execute(&self.pool)
+            .await?;
+        self.monthly_category_budgets(month).await
     }
 
     async fn validate_category_parent(
