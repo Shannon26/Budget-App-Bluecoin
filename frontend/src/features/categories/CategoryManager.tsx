@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { api } from "./api";
-import { formatMinor } from "./money";
-import type { BudgetState, Category, TransactionKind } from "./types";
+import { api } from "../../shared/api";
+import { formatMinor } from "../../shared/money";
+import type { BudgetState, Category, TransactionKind } from "../../shared/types";
 
 interface CategoryManagerProps {
   data: BudgetState;

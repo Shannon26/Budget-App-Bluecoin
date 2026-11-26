@@ -1,0 +1,49 @@
+.category-spotlight {
+  margin-top: 20px;
+}
+
+.category-total-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.category-total-grid article {
+  padding: 16px;
+  border: 1px solid #e3e6dc;
+  border-radius: 14px;
+  background: #fbfaf4;
+}
+
+.category-total-grid span,
+.category-total-grid strong,
+.category-total-grid small {
+  display: block;
+}
+
+.category-total-grid span {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.category-total-grid strong {
+  margin: 8px 0 4px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.category-total-grid small {
+  color: #8b978f;
+  font-size: 10px;
+}
+
+.positive-text {
+  color: #2b7457;
+}
+
+.negative-text {
+  color: #a25333;
+}
+

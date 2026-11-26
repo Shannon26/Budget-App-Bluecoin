@@ -9,6 +9,13 @@ An original, local-first budgeting web app. It includes a seeded category catalo
 - **Money:** signed 64-bit integer minor units (paise); decimal text is validated and converted exactly in the browser
 - **Currency:** INR only, enforced by both UI and API until per-currency reporting exists
 
+## Project layout and agent guides
+
+- [`backend/AGENTS.md`](backend/AGENTS.md) documents backend folders, where to add routes/store/models/tests, required checks, and invariants for paise, atomic transfers, dates, CSV, and budget transactions.
+- [`frontend/AGENTS.md`](frontend/AGENTS.md) documents feature folders, shared helpers, month-specific request handling, stable browser selectors, and frontend checks.
+- Frontend screens live under `frontend/src/features/`; shared API, money, date, and types live under `frontend/src/shared/`.
+- Backend HTTP, store, model, and test code is grouped under `backend/src/routes/`, `store/`, `models/`, and `tests/`; `main.rs` contains startup/wiring only.
+
 ## Prerequisites
 
 - Rust toolchain with Cargo
@@ -55,7 +62,7 @@ Stop either process with `Ctrl+C`.
 - New hierarchy changes are limited to category → subcategory; parents must be active top-level categories of the same type.
 - Categories with subcategories cannot be moved until those subcategories are moved first.
 - Optional categories with **Uncategorized** fallback; transfers remain uncategorized.
-- Referenced categories archive instead of disappearing, preserving history and totals while leaving new-entry pickers.
+- Referenced or budgeted categories archive instead of disappearing, preserving history, limits, and totals while leaving new-entry pickers.
 - Date-grouped ledger with daily income, expense, and transfer totals.
 - Stable 200-entry pages with **Load more** for older matching entries in both the main ledger and account history.
 - Daily totals cover all matching transactions for that day, including entries not yet loaded.
@@ -160,7 +167,7 @@ All amounts are integer minor units.
 | `POST` | `/api/transfers/:id/duplicate` | Duplicate transfer |
 | `PATCH` | `/api/transfers/:id/reconciliation` | Reconcile both legs |
 | `GET/POST` | `/api/categories` | List/create categories |
-| `PUT/DELETE` | `/api/categories/:id` | Edit/archive or delete category |
+| `PUT/DELETE` | `/api/categories/:id` | Edit; archive referenced/budgeted categories or delete unused categories |
 | `GET` | `/api/category-budgets?month=YYYY-MM` | Monthly expense spending, category rollups, limits, remaining/over amounts, and archived categories |
 | `PUT` | `/api/category-budgets/:category_id?month=YYYY-MM` | Create/update a monthly category limit from `{ "amount_minor": 500000 }` |
 | `DELETE` | `/api/category-budgets/:category_id?month=YYYY-MM` | Remove a monthly category limit |

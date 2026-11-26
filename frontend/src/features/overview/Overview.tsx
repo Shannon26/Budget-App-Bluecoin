@@ -1,0 +1,217 @@
+import { useMemo } from "react";
+import { formatMinor } from "../../shared/money";
+import type { BudgetState } from "../../shared/types";
+import AccountForm from "../accounts/AccountForm";
+import TransactionForm from "../ledger/TransactionForm";
+import TransferForm from "../transfers/TransferForm";
+import { activityDetails } from "./activity";
+import type { OverviewForms } from "./useOverviewForms";
+
+interface OverviewProps {
+  data: BudgetState;
+  loading: boolean;
+  refresh: () => Promise<void>;
+  forms: OverviewForms;
+  onAccountHistory: (accountId: number) => void;
+  onOpenLedger: () => void;
+  onOpenCategories: () => void;
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+export default function Overview({
+  data,
+  loading,
+  refresh,
+  forms,
+  onAccountHistory,
+  onOpenLedger,
+  onOpenCategories,
+}: OverviewProps) {
+  const totalBalance = useMemo(
+    () => data.accounts.reduce((sum, account) => sum + account.balance_minor, 0),
+    [data.accounts],
+  );
+  const categorySpotlight = useMemo(
+    () =>
+      data.category_totals
+        .filter((total) => total.category_id !== null)
+        .sort((left, right) => right.total_minor - left.total_minor)
+        .slice(0, 6),
+    [data.category_totals],
+  );
+
+  return (
+    <>
+      <section className="hero">
+        <div>
+          <p className="eyebrow">A clear view, without the clutter</p>
+          <h1>Make room for what matters.</h1>
+          <p className="hero-copy">
+            Track the money in your accounts, record what comes in and goes out, and move
+            funds between accounts without distorting your cash flow.
+          </p>
+        </div>
+        <div className="hero-note">
+          <span className="hero-note-icon">↗</span>
+          <p>
+            Transfers are movements, not earnings or spending. Your income and expense
+            totals stay honest.
+          </p>
+        </div>
+      </section>
+
+      <section className="summary-grid" aria-label="Money summary">
+        <article className="summary-card summary-balance">
+          <p>Total balance · INR</p>
+          <h2 data-testid="total-balance">{formatMinor(totalBalance)}</h2>
+          <span>Across {data.accounts.length} account{data.accounts.length === 1 ? "" : "s"}</span>
+        </article>
+        <article className="summary-card summary-income">
+          <p>Income</p>
+          <h2 data-testid="income-total">{formatMinor(data.totals.income_minor)}</h2>
+          <span>Money received</span>
+        </article>
+        <article className="summary-card summary-expense">
+          <p>Expenses</p>
+          <h2 data-testid="expense-total">{formatMinor(data.totals.expense_minor)}</h2>
+          <span>Money spent</span>
+        </article>
+      </section>
+
+      <div className="dashboard-grid">
+        <section className="panel accounts-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-kicker">Where your money lives</p>
+              <h2>Accounts</h2>
+            </div>
+            <button className="text-button" type="button" onClick={() => void refresh()}>
+              Refresh
+            </button>
+          </div>
+
+          {loading && data.accounts.length === 0 ? (
+            <div className="empty-state">Loading your ledger…</div>
+          ) : data.accounts.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">◌</span>
+              <h3>Start with an account</h3>
+              <p>Add cash, a bank account, or a wallet and give it an opening balance.</p>
+            </div>
+          ) : (
+            <div className="account-grid">
+              {data.accounts.map((account) => (
+                <article
+                  className="account-card"
+                  key={account.id}
+                  data-testid={`account-${account.id}`}
+                  data-account-name={account.name}
+                >
+                  <div className="account-card-top">
+                    <span className={`account-avatar avatar-${account.id % 4}`}>
+                      {initials(account.name)}
+                    </span>
+                    <span className="currency-chip">{account.currency}</span>
+                  </div>
+                  <h3>{account.name}</h3>
+                  <p className="account-balance" data-testid="account-balance">
+                    {formatMinor(account.balance_minor, account.currency)}
+                  </p>
+                  <small>
+                    Opened with {formatMinor(account.opening_balance_minor, account.currency)}
+                  </small>
+                  <button
+                    className="text-button account-history-button"
+                    data-testid={`account-history-${account.id}`}
+                    type="button"
+                    onClick={() => onAccountHistory(account.id)}
+                  >
+                    View history →
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <AccountForm forms={forms} />
+      </div>
+
+      <div className="workspace-grid">
+        <TransactionForm data={data} forms={forms} />
+        <TransferForm data={data} forms={forms} />
+      </div>
+
+      {categorySpotlight.length > 0 && (
+        <section className="panel category-spotlight">
+          <div className="panel-heading">
+            <div>
+              <p className="section-kicker">Where it goes</p>
+              <h2>Category totals</h2>
+            </div>
+            <button className="text-button" type="button" onClick={onOpenCategories}>
+              Manage categories
+            </button>
+          </div>
+          <div className="category-total-grid">
+            {categorySpotlight.map((total) => (
+              <article key={`${total.kind}-${total.category_id}`}>
+                <span>{total.name}</span>
+                <strong className={total.kind === "income" ? "positive-text" : "negative-text"}>
+                  {formatMinor(total.total_minor)}
+                </strong>
+                <small>{total.entry_count} entries</small>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="panel activity-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-kicker">Latest activity</p>
+            <h2>Ledger entries</h2>
+          </div>
+          <button className="text-button" type="button" onClick={onOpenLedger}>
+            Open ledger
+          </button>
+        </div>
+        {data.entries.length === 0 ? (
+          <div className="activity-empty">No entries yet. Your first transaction will appear here.</div>
+        ) : (
+          <div className="entry-list">
+            {data.entries.slice(0, 12).map((entry) => {
+              const details = activityDetails(entry);
+              return (
+                <article className="entry-row" key={`${entry.kind}-${entry.id}`}>
+                  <span className={`entry-icon ${details.tone}`}>{details.sign}</span>
+                  <div className="entry-main">
+                    <strong>{entry.name || details.label}</strong>
+                    <span>
+                      {details.account} · {details.category}
+                    </span>
+                  </div>
+                  {entry.reconciled && <span className="reconciled-badge">✓</span>}
+                  <time dateTime={entry.occurred_at}>{entry.occurred_at.slice(0, 10)}</time>
+                  <strong className={`entry-amount ${details.tone}`}>
+                    {details.sign}
+                    {formatMinor(entry.amount_minor)}
+                  </strong>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
