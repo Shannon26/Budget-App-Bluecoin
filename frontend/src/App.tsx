@@ -6,14 +6,21 @@ import {
   type FormEvent,
 } from "react";
 import { api } from "./api";
+import CategoryManager from "./CategoryManager";
+import Ledger from "./Ledger";
 import { dateTimeValue, formatMinor, localDateValue, parseMinorUnits } from "./money";
-import type { BudgetState, Entry, TransactionKind } from "./types";
+import type { BudgetState, LedgerEntry, TransactionKind } from "./types";
 
 const emptyState: BudgetState = {
   accounts: [],
   totals: { income_minor: 0, expense_minor: 0 },
+  categories: [],
+  category_totals: [],
+  saved_filters: [],
   entries: [],
 };
+
+type Tab = "overview" | "ledger" | "categories";
 
 function initials(name: string): string {
   return name
@@ -24,21 +31,31 @@ function initials(name: string): string {
     .join("");
 }
 
-function entryDetails(entry: Entry) {
-  switch (entry.kind) {
-    case "income":
-      return { label: "Income", sign: "+", tone: "positive" };
-    case "expense":
-      return { label: "Expense", sign: "−", tone: "negative" };
-    case "transfer_in":
-      return { label: "Transfer in", sign: "+", tone: "transfer" };
-    case "transfer_out":
-      return { label: "Transfer out", sign: "−", tone: "transfer" };
+function activityDetails(entry: LedgerEntry) {
+  if (entry.kind === "transfer") {
+    return {
+      label: "Transfer",
+      sign: "⇄",
+      tone: "transfer",
+      account: `${entry.account_name} → ${entry.counterpart_account_name ?? ""}`,
+      category: "Not categorized",
+    };
   }
+  return {
+    label: entry.kind === "income" ? "Income" : "Expense",
+    sign: entry.kind === "income" ? "+" : "−",
+    tone: entry.kind === "income" ? "positive" : "negative",
+    account: entry.account_name,
+    category: entry.category_name
+      ? `${entry.category_parent_name ? `${entry.category_parent_name} / ` : ""}${entry.category_name}`
+      : "Uncategorized",
+  };
 }
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [historyAccountId, setHistoryAccountId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,16 +65,31 @@ export default function App() {
   const [openingBalance, setOpeningBalance] = useState("");
 
   const [transactionKind, setTransactionKind] = useState<TransactionKind>("expense");
+  const [transactionName, setTransactionName] = useState("");
   const [transactionAccountId, setTransactionAccountId] = useState("");
+  const [transactionCategoryId, setTransactionCategoryId] = useState("");
   const [transactionAmount, setTransactionAmount] = useState("");
   const [transactionNote, setTransactionNote] = useState("");
   const [transactionDate, setTransactionDate] = useState(localDateValue());
+  const [transactionReconciled, setTransactionReconciled] = useState(false);
 
+  const [transferName, setTransferName] = useState("");
   const [transferFrom, setTransferFrom] = useState("");
   const [transferTo, setTransferTo] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
   const [transferNote, setTransferNote] = useState("");
   const [transferDate, setTransferDate] = useState(localDateValue());
+  const [transferReconciled, setTransferReconciled] = useState(false);
+
+  const onMessage = useCallback((message: string, isError = false) => {
+    if (isError) {
+      setError(message);
+      setNotice(null);
+    } else {
+      setNotice(message);
+      setError(null);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -83,13 +115,26 @@ export default function App() {
     );
   }, [data.accounts]);
 
-  const displayCurrency = data.accounts[0]?.currency ?? "INR";
   const totalBalance = useMemo(
+    () => data.accounts.reduce((sum, account) => sum + account.balance_minor, 0),
+    [data.accounts],
+  );
+
+  const transactionCategories = useMemo(
     () =>
-      data.accounts
-        .filter((account) => account.currency === displayCurrency)
-        .reduce((sum, account) => sum + account.balance_minor, 0),
-    [data.accounts, displayCurrency],
+      data.categories.filter(
+        (category) => category.kind === transactionKind && category.archived_at === null,
+      ),
+    [data.categories, transactionKind],
+  );
+
+  const categorySpotlight = useMemo(
+    () =>
+      data.category_totals
+        .filter((total) => total.category_id !== null)
+        .sort((left, right) => right.total_minor - left.total_minor)
+        .slice(0, 6),
+    [data.category_totals],
   );
 
   async function handleCreateAccount(event: FormEvent<HTMLFormElement>) {
@@ -107,10 +152,10 @@ export default function App() {
       });
       setAccountName("");
       setOpeningBalance("");
-      setNotice("Account created. Its opening balance is now part of the ledger.");
+      onMessage("Account created. Its opening balance is now part of the ledger.");
       await refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create account");
+      onMessage(reason instanceof Error ? reason.message : "Could not create account", true);
     } finally {
       setSubmitting(false);
     }
@@ -131,15 +176,20 @@ export default function App() {
         kind: transactionKind,
         account_id: Number(transactionAccountId),
         amount_minor: amountMinor,
+        name: transactionName,
+        category_id: transactionCategoryId ? Number(transactionCategoryId) : null,
+        reconciled: transactionReconciled,
         note: transactionNote,
         occurred_at: dateTimeValue(transactionDate),
       });
+      setTransactionName("");
       setTransactionAmount("");
       setTransactionNote("");
-      setNotice(`${transactionKind === "income" ? "Income" : "Expense"} recorded.`);
+      setTransactionReconciled(false);
+      onMessage(`${transactionKind === "income" ? "Income" : "Expense"} recorded.`);
       await refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not record transaction");
+      onMessage(reason instanceof Error ? reason.message : "Could not record transaction", true);
     } finally {
       setSubmitting(false);
     }
@@ -161,15 +211,19 @@ export default function App() {
         from_account_id: Number(transferFrom),
         to_account_id: Number(transferTo),
         amount_minor: amountMinor,
+        name: transferName,
+        reconciled: transferReconciled,
         note: transferNote,
         occurred_at: dateTimeValue(transferDate),
       });
+      setTransferName("");
       setTransferAmount("");
       setTransferNote("");
-      setNotice("Transfer complete. Both balances updated; income and expenses did not change.");
+      setTransferReconciled(false);
+      onMessage("Transfer complete. Both balances updated; income and expenses did not change.");
       await refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not complete transfer");
+      onMessage(reason instanceof Error ? reason.message : "Could not complete transfer", true);
     } finally {
       setSubmitting(false);
     }
@@ -191,25 +245,37 @@ export default function App() {
         </div>
       </header>
 
-      <main>
-        <section className="hero">
-          <div>
-            <p className="eyebrow">A clear view, without the clutter</p>
-            <h1>Make room for what matters.</h1>
-            <p className="hero-copy">
-              Track the money in your accounts, record what comes in and goes out, and move
-              funds between accounts without distorting your cash flow.
-            </p>
-          </div>
-          <div className="hero-note">
-            <span className="hero-note-icon">↗</span>
-            <p>
-              Transfers are movements, not earnings or spending. Your income and expense
-              totals stay honest.
-            </p>
-          </div>
-        </section>
+      <nav className="main-nav" aria-label="Main navigation">
+        <button
+          data-testid="nav-overview"
+          className={activeTab === "overview" ? "active" : ""}
+          type="button"
+          onClick={() => {
+            setActiveTab("overview");
+            setHistoryAccountId(null);
+          }}
+        >
+          Overview
+        </button>
+        <button
+          data-testid="nav-ledger"
+          className={activeTab === "ledger" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveTab("ledger")}
+        >
+          Ledger
+        </button>
+        <button
+          data-testid="nav-categories"
+          className={activeTab === "categories" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveTab("categories")}
+        >
+          Categories
+        </button>
+      </nav>
 
+      <main>
         {(error || notice) && (
           <div
             className={`message ${error ? "message-error" : "message-success"}`}
@@ -220,331 +286,465 @@ export default function App() {
           </div>
         )}
 
-        <section className="summary-grid" aria-label="Money summary">
-          <article className="summary-card summary-balance">
-            <p>Total balance · {displayCurrency}</p>
-            <h2 data-testid="total-balance">{formatMinor(totalBalance, displayCurrency)}</h2>
-            <span>Across {data.accounts.length} account{data.accounts.length === 1 ? "" : "s"}</span>
-          </article>
-          <article className="summary-card summary-income">
-            <p>Income</p>
-            <h2 data-testid="income-total">{formatMinor(data.totals.income_minor)}</h2>
-            <span>Money received</span>
-          </article>
-          <article className="summary-card summary-expense">
-            <p>Expenses</p>
-            <h2 data-testid="expense-total">{formatMinor(data.totals.expense_minor)}</h2>
-            <span>Money spent</span>
-          </article>
-        </section>
-
-        <div className="dashboard-grid">
-          <section className="panel accounts-panel">
-            <div className="panel-heading">
+        {activeTab === "overview" && (
+          <>
+            <section className="hero">
               <div>
-                <p className="section-kicker">Where your money lives</p>
-                <h2>Accounts</h2>
+                <p className="eyebrow">A clear view, without the clutter</p>
+                <h1>Make room for what matters.</h1>
+                <p className="hero-copy">
+                  Track the money in your accounts, record what comes in and goes out, and move
+                  funds between accounts without distorting your cash flow.
+                </p>
               </div>
-              <button className="text-button" type="button" onClick={() => void refresh()}>
-                Refresh
-              </button>
+              <div className="hero-note">
+                <span className="hero-note-icon">↗</span>
+                <p>
+                  Transfers are movements, not earnings or spending. Your income and expense
+                  totals stay honest.
+                </p>
+              </div>
+            </section>
+
+            <section className="summary-grid" aria-label="Money summary">
+              <article className="summary-card summary-balance">
+                <p>Total balance · INR</p>
+                <h2 data-testid="total-balance">{formatMinor(totalBalance)}</h2>
+                <span>Across {data.accounts.length} account{data.accounts.length === 1 ? "" : "s"}</span>
+              </article>
+              <article className="summary-card summary-income">
+                <p>Income</p>
+                <h2 data-testid="income-total">{formatMinor(data.totals.income_minor)}</h2>
+                <span>Money received</span>
+              </article>
+              <article className="summary-card summary-expense">
+                <p>Expenses</p>
+                <h2 data-testid="expense-total">{formatMinor(data.totals.expense_minor)}</h2>
+                <span>Money spent</span>
+              </article>
+            </section>
+
+            <div className="dashboard-grid">
+              <section className="panel accounts-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-kicker">Where your money lives</p>
+                    <h2>Accounts</h2>
+                  </div>
+                  <button className="text-button" type="button" onClick={() => void refresh()}>
+                    Refresh
+                  </button>
+                </div>
+
+                {loading && data.accounts.length === 0 ? (
+                  <div className="empty-state">Loading your ledger…</div>
+                ) : data.accounts.length === 0 ? (
+                  <div className="empty-state">
+                    <span className="empty-icon">◌</span>
+                    <h3>Start with an account</h3>
+                    <p>Add cash, a bank account, or a wallet and give it an opening balance.</p>
+                  </div>
+                ) : (
+                  <div className="account-grid">
+                    {data.accounts.map((account) => (
+                      <article
+                        className="account-card"
+                        key={account.id}
+                        data-testid={`account-${account.id}`}
+                        data-account-name={account.name}
+                      >
+                        <div className="account-card-top">
+                          <span className={`account-avatar avatar-${account.id % 4}`}>
+                            {initials(account.name)}
+                          </span>
+                          <span className="currency-chip">{account.currency}</span>
+                        </div>
+                        <h3>{account.name}</h3>
+                        <p className="account-balance" data-testid="account-balance">
+                          {formatMinor(account.balance_minor, account.currency)}
+                        </p>
+                        <small>
+                          Opened with {formatMinor(account.opening_balance_minor, account.currency)}
+                        </small>
+                        <button
+                          className="text-button account-history-button"
+                          data-testid={`account-history-${account.id}`}
+                          type="button"
+                          onClick={() => {
+                            setHistoryAccountId(account.id);
+                            setActiveTab("ledger");
+                          }}
+                        >
+                          View history →
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <aside className="panel form-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-kicker">New account</p>
+                    <h2>Add an account</h2>
+                  </div>
+                </div>
+                <form className="stack-form" onSubmit={handleCreateAccount}>
+                  <label>
+                    Account name
+                    <input
+                      data-testid="account-name"
+                      value={accountName}
+                      onChange={(event) => setAccountName(event.target.value)}
+                      placeholder="e.g. Daily cash"
+                      maxLength={80}
+                      required
+                    />
+                  </label>
+                  <div className="form-row">
+                    <label>
+                      Opening balance
+                      <input
+                        data-testid="opening-balance"
+                        value={openingBalance}
+                        onChange={(event) => setOpeningBalance(event.target.value)}
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        required
+                      />
+                    </label>
+                    <label className="currency-field">
+                      Currency
+                      <input value="INR" readOnly aria-readonly="true" />
+                      <small className="field-hint">INR only in this milestone.</small>
+                    </label>
+                  </div>
+                  <button className="primary-button" data-testid="create-account" disabled={submitting}>
+                    {submitting ? "Saving…" : "Create account"}
+                  </button>
+                </form>
+              </aside>
             </div>
 
-            {loading && data.accounts.length === 0 ? (
-              <div className="empty-state">Loading your ledger…</div>
-            ) : data.accounts.length === 0 ? (
-              <div className="empty-state">
-                <span className="empty-icon">◌</span>
-                <h3>Start with an account</h3>
-                <p>Add cash, a bank account, or a wallet and give it an opening balance.</p>
-              </div>
-            ) : (
-              <div className="account-grid">
-                {data.accounts.map((account) => (
-                  <article
-                    className="account-card"
-                    key={account.id}
-                    data-testid={`account-${account.id}`}
-                    data-account-name={account.name}
+            <div className="workspace-grid">
+              <section className="panel form-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-kicker">Cash flow</p>
+                    <h2>Record income or expense</h2>
+                  </div>
+                </div>
+                <div className="segmented" aria-label="Transaction type">
+                  <button
+                    type="button"
+                    className={transactionKind === "income" ? "active income-active" : ""}
+                    onClick={() => {
+                      setTransactionKind("income");
+                      setTransactionCategoryId("");
+                    }}
                   >
-                    <div className="account-card-top">
-                      <span className={`account-avatar avatar-${account.id % 4}`}>
-                        {initials(account.name)}
-                      </span>
-                      <span className="currency-chip">{account.currency}</span>
-                    </div>
-                    <h3>{account.name}</h3>
-                    <p className="account-balance" data-testid="account-balance">
-                      {formatMinor(account.balance_minor, account.currency)}
-                    </p>
-                    <small>
-                      Opened with {formatMinor(account.opening_balance_minor, account.currency)}
-                    </small>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+                    Income
+                  </button>
+                  <button
+                    type="button"
+                    className={transactionKind === "expense" ? "active expense-active" : ""}
+                    onClick={() => {
+                      setTransactionKind("expense");
+                      setTransactionCategoryId("");
+                    }}
+                  >
+                    Expense
+                  </button>
+                </div>
+                <form className="stack-form" onSubmit={handleTransaction}>
+                  <label>
+                    Name
+                    <input
+                      data-testid="transaction-name"
+                      value={transactionName}
+                      onChange={(event) => setTransactionName(event.target.value)}
+                      placeholder="e.g. Dinner or Monthly salary"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Account
+                    <select
+                      data-testid="transaction-account"
+                      value={transactionAccountId}
+                      onChange={(event) => setTransactionAccountId(event.target.value)}
+                      required
+                      disabled={data.accounts.length === 0}
+                    >
+                      {data.accounts.length === 0 && <option value="">Create an account first</option>}
+                      {data.accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name} · {account.currency}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Category
+                    <select
+                      data-testid="transaction-category"
+                      value={transactionCategoryId}
+                      onChange={(event) => setTransactionCategoryId(event.target.value)}
+                    >
+                      <option value="">Uncategorized</option>
+                      {transactionCategories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.parent_name ? `${category.parent_name} / ` : ""}
+                          {category.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="form-row">
+                    <label>
+                      Amount
+                      <input
+                        data-testid="transaction-amount"
+                        value={transactionAmount}
+                        onChange={(event) => setTransactionAmount(event.target.value)}
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Date
+                      <input
+                        type="date"
+                        value={transactionDate}
+                        onChange={(event) => setTransactionDate(event.target.value)}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    Note <span className="optional">optional</span>
+                    <input
+                      value={transactionNote}
+                      onChange={(event) => setTransactionNote(event.target.value)}
+                      placeholder="What was it for?"
+                      maxLength={500}
+                    />
+                  </label>
+                  <label className="check-label">
+                    <input
+                      type="checkbox"
+                      checked={transactionReconciled}
+                      onChange={(event) => setTransactionReconciled(event.target.checked)}
+                    />
+                    Reconciled
+                  </label>
+                  <button
+                    className={`primary-button ${transactionKind === "income" ? "income-button" : ""}`}
+                    disabled={submitting || data.accounts.length === 0}
+                  >
+                    {submitting
+                      ? "Saving…"
+                      : `Record ${transactionKind === "income" ? "income" : "expense"}`}
+                  </button>
+                </form>
+              </section>
 
-          <aside className="panel form-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="section-kicker">New account</p>
-                <h2>Add an account</h2>
-              </div>
+              <section className="panel form-panel transfer-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-kicker">Move money</p>
+                    <h2>Transfer between accounts</h2>
+                  </div>
+                  <span className="transfer-symbol">⇄</span>
+                </div>
+                <form className="stack-form" onSubmit={handleTransfer}>
+                  <label>
+                    Name
+                    <input
+                      data-testid="transfer-name"
+                      value={transferName}
+                      onChange={(event) => setTransferName(event.target.value)}
+                      placeholder="e.g. Move to savings"
+                    />
+                  </label>
+                  <div className="form-row">
+                    <label>
+                      From
+                      <select
+                        data-testid="transfer-from"
+                        value={transferFrom}
+                        onChange={(event) => setTransferFrom(event.target.value)}
+                        required
+                        disabled={data.accounts.length === 0}
+                      >
+                        {data.accounts.length === 0 && <option value="">No accounts yet</option>}
+                        {data.accounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      To
+                      <select
+                        data-testid="transfer-to"
+                        value={transferTo}
+                        onChange={(event) => setTransferTo(event.target.value)}
+                        required
+                        disabled={data.accounts.length < 2}
+                      >
+                        {data.accounts.length < 2 && <option value="">Add two accounts first</option>}
+                        {data.accounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      Amount
+                      <input
+                        data-testid="transfer-amount"
+                        value={transferAmount}
+                        onChange={(event) => setTransferAmount(event.target.value)}
+                        inputMode="decimal"
+                        placeholder="250.00"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Date
+                      <input
+                        type="date"
+                        value={transferDate}
+                        onChange={(event) => setTransferDate(event.target.value)}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    Note <span className="optional">optional</span>
+                    <input
+                      data-testid="transfer-note"
+                      value={transferNote}
+                      onChange={(event) => setTransferNote(event.target.value)}
+                      placeholder="e.g. Move to savings"
+                      maxLength={500}
+                    />
+                  </label>
+                  <label className="check-label">
+                    <input
+                      type="checkbox"
+                      checked={transferReconciled}
+                      onChange={(event) => setTransferReconciled(event.target.checked)}
+                    />
+                    Reconciled
+                  </label>
+                  <button
+                    className="primary-button transfer-button"
+                    data-testid="submit-transfer"
+                    disabled={submitting || data.accounts.length < 2}
+                  >
+                    {submitting ? "Moving…" : "Complete transfer"}
+                  </button>
+                  <p className="form-footnote">
+                    Both sides are written atomically. Income and expense totals are untouched.
+                  </p>
+                </form>
+              </section>
             </div>
-            <form className="stack-form" onSubmit={handleCreateAccount}>
-              <label>
-                Account name
-                <input
-                  data-testid="account-name"
-                  value={accountName}
-                  onChange={(event) => setAccountName(event.target.value)}
-                  placeholder="e.g. Daily cash"
-                  maxLength={80}
-                  required
-                />
-              </label>
-              <div className="form-row">
-                <label>
-                  Opening balance
-                  <input
-                    data-testid="opening-balance"
-                    value={openingBalance}
-                    onChange={(event) => setOpeningBalance(event.target.value)}
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    required
-                  />
-                </label>
-                <label className="currency-field">
-                  Currency
-                  <input value="INR" readOnly aria-readonly="true" />
-                  <small className="field-hint">INR only in this milestone.</small>
-                </label>
-              </div>
-              <button className="primary-button" data-testid="create-account" disabled={submitting}>
-                {submitting ? "Saving…" : "Create account"}
-              </button>
-            </form>
-          </aside>
-        </div>
 
-        <div className="workspace-grid">
-          <section className="panel form-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="section-kicker">Cash flow</p>
-                <h2>Record income or expense</h2>
-              </div>
-            </div>
-            <div className="segmented" aria-label="Transaction type">
-              <button
-                type="button"
-                className={transactionKind === "income" ? "active income-active" : ""}
-                onClick={() => setTransactionKind("income")}
-              >
-                Income
-              </button>
-              <button
-                type="button"
-                className={transactionKind === "expense" ? "active expense-active" : ""}
-                onClick={() => setTransactionKind("expense")}
-              >
-                Expense
-              </button>
-            </div>
-            <form className="stack-form" onSubmit={handleTransaction}>
-              <label>
-                Account
-                <select
-                  data-testid="transaction-account"
-                  value={transactionAccountId}
-                  onChange={(event) => setTransactionAccountId(event.target.value)}
-                  required
-                  disabled={data.accounts.length === 0}
-                >
-                  {data.accounts.length === 0 && <option value="">Create an account first</option>}
-                  {data.accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name} · {account.currency}
-                    </option>
+            {categorySpotlight.length > 0 && (
+              <section className="panel category-spotlight">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-kicker">Where it goes</p>
+                    <h2>Category totals</h2>
+                  </div>
+                  <button className="text-button" type="button" onClick={() => setActiveTab("categories")}>
+                    Manage categories
+                  </button>
+                </div>
+                <div className="category-total-grid">
+                  {categorySpotlight.map((total) => (
+                    <article key={`${total.kind}-${total.category_id}`}>
+                      <span>{total.name}</span>
+                      <strong className={total.kind === "income" ? "positive-text" : "negative-text"}>
+                        {formatMinor(total.total_minor)}
+                      </strong>
+                      <small>{total.entry_count} entries</small>
+                    </article>
                   ))}
-                </select>
-              </label>
-              <div className="form-row">
-                <label>
-                  Amount
-                  <input
-                    data-testid="transaction-amount"
-                    value={transactionAmount}
-                    onChange={(event) => setTransactionAmount(event.target.value)}
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    required
-                  />
-                </label>
-                <label>
-                  Date
-                  <input
-                    type="date"
-                    value={transactionDate}
-                    onChange={(event) => setTransactionDate(event.target.value)}
-                    required
-                  />
-                </label>
-              </div>
-              <label>
-                Note <span className="optional">optional</span>
-                <input
-                  value={transactionNote}
-                  onChange={(event) => setTransactionNote(event.target.value)}
-                  placeholder="What was it for?"
-                  maxLength={500}
-                />
-              </label>
-              <button
-                className={`primary-button ${transactionKind === "income" ? "income-button" : ""}`}
-                disabled={submitting || data.accounts.length === 0}
-              >
-                {submitting
-                  ? "Saving…"
-                  : `Record ${transactionKind === "income" ? "income" : "expense"}`}
-              </button>
-            </form>
-          </section>
+                </div>
+              </section>
+            )}
 
-          <section className="panel form-panel transfer-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="section-kicker">Move money</p>
-                <h2>Transfer between accounts</h2>
+            <section className="panel activity-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="section-kicker">Latest activity</p>
+                  <h2>Ledger entries</h2>
+                </div>
+                <button className="text-button" type="button" onClick={() => setActiveTab("ledger")}>
+                  Open ledger
+                </button>
               </div>
-              <span className="transfer-symbol">⇄</span>
-            </div>
-            <form className="stack-form" onSubmit={handleTransfer}>
-              <div className="form-row">
-                <label>
-                  From
-                  <select
-                    data-testid="transfer-from"
-                    value={transferFrom}
-                    onChange={(event) => setTransferFrom(event.target.value)}
-                    required
-                    disabled={data.accounts.length === 0}
-                  >
-                    {data.accounts.length === 0 && <option value="">No accounts yet</option>}
-                    {data.accounts.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  To
-                  <select
-                    data-testid="transfer-to"
-                    value={transferTo}
-                    onChange={(event) => setTransferTo(event.target.value)}
-                    required
-                    disabled={data.accounts.length < 2}
-                  >
-                    {data.accounts.length < 2 && <option value="">Add two accounts first</option>}
-                    {data.accounts.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <div className="form-row">
-                <label>
-                  Amount
-                  <input
-                    data-testid="transfer-amount"
-                    value={transferAmount}
-                    onChange={(event) => setTransferAmount(event.target.value)}
-                    inputMode="decimal"
-                    placeholder="250.00"
-                    required
-                  />
-                </label>
-                <label>
-                  Date
-                  <input
-                    type="date"
-                    value={transferDate}
-                    onChange={(event) => setTransferDate(event.target.value)}
-                    required
-                  />
-                </label>
-              </div>
-              <label>
-                Note <span className="optional">optional</span>
-                <input
-                  data-testid="transfer-note"
-                  value={transferNote}
-                  onChange={(event) => setTransferNote(event.target.value)}
-                  placeholder="e.g. Move to savings"
-                  maxLength={500}
-                />
-              </label>
-              <button
-                className="primary-button transfer-button"
-                data-testid="submit-transfer"
-                disabled={submitting || data.accounts.length < 2}
-              >
-                {submitting ? "Moving…" : "Complete transfer"}
-              </button>
-              <p className="form-footnote">
-                Both sides are written atomically. Income and expense totals are untouched.
-              </p>
-            </form>
-          </section>
-        </div>
+              {data.entries.length === 0 ? (
+                <div className="activity-empty">No entries yet. Your first transaction will appear here.</div>
+              ) : (
+                <div className="entry-list">
+                  {data.entries.slice(0, 12).map((entry) => {
+                    const details = activityDetails(entry);
+                    return (
+                      <article className="entry-row" key={`${entry.kind}-${entry.id}`}>
+                        <span className={`entry-icon ${details.tone}`}>{details.sign}</span>
+                        <div className="entry-main">
+                          <strong>{entry.name || details.label}</strong>
+                          <span>
+                            {details.account} · {details.category}
+                          </span>
+                        </div>
+                        {entry.reconciled && <span className="reconciled-badge">✓</span>}
+                        <time dateTime={entry.occurred_at}>{entry.occurred_at.slice(0, 10)}</time>
+                        <strong className={`entry-amount ${details.tone}`}>
+                          {details.sign}
+                          {formatMinor(entry.amount_minor)}
+                        </strong>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </>
+        )}
 
-        <section className="panel activity-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="section-kicker">Latest activity</p>
-              <h2>Ledger entries</h2>
-            </div>
-            <span className="entry-count">{data.entries.length} recent</span>
-          </div>
-          {data.entries.length === 0 ? (
-            <div className="activity-empty">No entries yet. Your first transaction will appear here.</div>
-          ) : (
-            <div className="entry-list">
-              {data.entries.map((entry) => {
-                const details = entryDetails(entry);
-                return (
-                  <article className="entry-row" key={entry.id}>
-                    <span className={`entry-icon ${details.tone}`}>
-                      {entry.kind === "transfer_in" || entry.kind === "transfer_out" ? "⇄" : details.sign}
-                    </span>
-                    <div className="entry-main">
-                      <strong>{entry.note || details.label}</strong>
-                      <span>
-                        {details.label} · {entry.account_name}
-                      </span>
-                    </div>
-                    <time dateTime={entry.occurred_at}>{entry.occurred_at.slice(0, 10)}</time>
-                    <strong className={`entry-amount ${details.tone}`}>
-                      {details.sign}
-                      {formatMinor(entry.amount_minor)}
-                    </strong>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
+        {activeTab === "ledger" && (
+          <section className="panel ledger-panel">
+            <Ledger
+              data={data}
+              refresh={refresh}
+              onMessage={onMessage}
+              historyAccountId={historyAccountId}
+              onClearHistory={() => setHistoryAccountId(null)}
+            />
+          </section>
+        )}
+
+        {activeTab === "categories" && (
+          <section className="panel ledger-panel">
+            <CategoryManager data={data} refresh={refresh} onMessage={onMessage} />
+          </section>
+        )}
       </main>
 
       <footer>
-        <span>Paisa · first working milestone</span>
+        <span>Paisa · categories and transaction management</span>
         <span>Amounts are stored as integer minor units (paise).</span>
       </footer>
     </div>

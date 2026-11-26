@@ -40,52 +40,75 @@ Detailed static findings remain in [`bluecoins-parity.md`](bluecoins-parity.md).
 
 This is the smallest next milestone that unlocks budgets, reports, reminders, and meaningful Bluecoins parity.
 
+### Agreed Paisa decisions
+
+| # | Decision | Agreed behavior |
+| --- | --- | --- |
+| 1 | Starter categories | Start with a comprehensive, editable set of income and expense categories that works out of the box for everyday and heavy users. Add subcategories where they make a meaningful distinction. Use specific, non-overlapping names so users can tell where an entry belongs. |
+| 2 | Category assignment | Categorization is optional. Show uncategorized income and expenses as **Uncategorized**. Transfers have no category. |
+| 3 | Category removal | Archive categories that have transactions. Keep their historical assignments and totals, and hide archived categories from selection for new entries. |
+| 4 | Transaction deletion | Delete transactions permanently after explicit confirmation. Deleting a transfer removes both legs in one database transaction. |
+| 5 | Transfer display | Show one combined transfer row in the main ledger. In each account’s history, show only the side that affects that account. |
+| 6 | Reconciliation | Use a manual **Reconciled** toggle. |
+| 7 | Saved views | Start with named ledger filters. Save dashboard and report preferences in a later milestone. |
+| 8 | Recurring transactions | Remind the user when an entry is due and wait for approval before recording it. |
+| 9 | Transfer fees | When fees are supported, record the fee as a separate expense on the paying account. |
+| 10 | Data export and agent access | Prioritize CSV export so users can share a ledger extract with their agents. Then build a Paisa MCP server for agents to inspect the ledger through the app. |
+
+**Database decision remains open.** SQLite is the current backend. Evaluate whether to keep it or switch databases based on where Paisa and its agents will run, whether they share one app instance, and what concurrent use will look like. Keep the future read-only MCP queries behind the Rust application layer so the agent integration does not dictate the database choice.
+
 ### Scope
 
 1. **Category model and CRUD**
    - `income` or `expense` category.
    - Optional parent category for a two-level hierarchy.
-   - Name, color/icon choice, sort order.
-   - Prevent cycles and unsafe deletion; reassign or block when transactions reference a category.
+   - Seed the starter catalog and let users customize names, colors/icons, and sort order.
+   - Prevent cycles. Archive referenced categories while preserving their historical use.
 
 2. **Transaction category assignment**
-   - Category selector for income and expenses.
+   - Optional category selector for income and expenses, with **Uncategorized** as the fallback.
    - No category for transfers.
    - Show parent/child category in lists and detail.
 
 3. **Ledger management**
    - Date-grouped transaction list with daily totals.
-   - Detail view with edit, delete, and duplicate.
-   - Note and reconciled/unreconciled status.
+   - Detail view with edit, duplicate, and permanent deletion after confirmation.
+   - Notes and a manual **Reconciled** toggle.
+   - One transfer row in the main ledger and the relevant side in each account’s history.
    - Preserve atomic two-leg behavior when editing/deleting transfers.
 
 4. **Search and filters**
    - Text search across transaction name and note.
    - Filter by account, category, status, amount range, and date range.
-   - Keep transfer legs grouped visually.
+   - Save and reopen named ledger filters.
 
 ### Acceptance criteria
 
-- Create `Expense > Food > Dining` and `Income > Salary`.
+**Status: implemented and verified on 2026-11-26.** See the root [`README.md`](../README.md) for commands and results. The repeatable browser test is `frontend/e2e/milestone2.spec.ts`, run by `./frontend/scripts/e2e.sh`.
+
+- On a fresh ledger, find suitable starter categories for a dining expense and salary income without creating custom categories.
 - Record a ₹250 dining expense and ₹1,000 salary entry.
 - See correct account balances and category totals.
+- Leave an income or expense entry uncategorized and confirm it appears as **Uncategorized**.
+- Archive a referenced category and verify it remains on existing entries and disappears from the picker for new ones.
 - Edit the expense to ₹300 and verify balances/totals update.
 - Duplicate it and verify a second entry is created.
-- Delete the duplicate and verify balances/totals return to the expected values.
-- Filter transactions by category/account/status and confirm transfers remain excluded from income/expense totals.
+- Confirm permanent deletion of the duplicate and verify balances/totals return to the expected values.
+- Verify a transfer appears once in the main ledger and with the correct direction in each account’s history. Edit and delete it to verify that both accounts update together without affecting income or expense totals.
+- Toggle **Reconciled**, then save and reopen a filter by category, account, or status.
 
 ## Following milestones
 
 1. **Account types and groups** — assets/liabilities, account grouping, hide toggles, credit-card limit/cutoff/due date.
 2. **Budgets** — overall and hierarchical category budgets, monthly periods, rollups, remaining/over states.
 3. **Reports and balance sheet** — net earnings, item summary, labels report, prior-period comparison, net worth.
-4. **Calendar and reminders** — calendar dots/day drill-down plus recurring/scheduled transaction generation.
+4. **Calendar and reminders** — calendar dots/day drill-down and recurring reminders that require approval before posting.
 5. **Splits and attachments** — split editor, receipt image/attachment metadata.
-6. **Multi-currency** — per-currency totals and reports before mixed-currency aggregation; transfer conversion and fees.
-7. **Import/export and backup** — CSV/QIF import, CSV export, backup/restore, trash/undo.
+6. **Multi-currency and fees** — per-currency reports, transfer conversion, and a separate expense on the account paying the transfer fee.
+7. **Data portability and agents** — CSV export first, followed by a Paisa MCP server for agent inspection. CSV/QIF import and backup/restore remain separate backlog items.
 8. **Sync, security, and polish** — QuickSync/Travel Mode, biometric lock, notifications, dashboard customization.
 
-## Open questions for later passes
+## Open Bluecoins research questions for later passes
 
 - How does Bluecoins handle category deletion when transactions already reference it?
 - What exact recurrence rules and timezone behavior does the reminder engine use?
