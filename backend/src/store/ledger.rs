@@ -208,10 +208,13 @@ impl Store {
     pub async fn account_history(
         &self,
         account_id: i64,
+        mut filter: FilterDefinition,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> AppResult<LedgerPage> {
         Store::load_account(&self.pool, account_id).await?;
+        Self::validate_filter(&filter)?;
+        filter.account_id = Some(account_id);
         let mut entries_query = QueryBuilder::<Sqlite>::new(
             "SELECT e.id, e.kind, e.name, e.note, e.account_id, a.name AS account_name,
                     NULL AS counterpart_account_id, NULL AS counterpart_account_name,
@@ -224,6 +227,7 @@ impl Store {
              WHERE e.account_id = ",
         );
         entries_query.push_bind(account_id);
+        Self::apply_entry_filters(&mut entries_query, &filter);
         entries_query
             .push(" AND e.kind IN ('income', 'expense') ORDER BY e.occurred_at DESC, e.id DESC");
         let mut entries = entries_query
@@ -233,22 +237,23 @@ impl Store {
 
         let mut transfers_query = QueryBuilder::<Sqlite>::new(
             "SELECT t.id,
-                    CASE WHEN t.from_account_id = e.account_id THEN 'transfer_out' ELSE 'transfer_in' END AS kind,
-                    t.name, t.note, e.account_id, a.name AS account_name,
-                    CASE WHEN t.from_account_id = e.account_id THEN t.to_account_id ELSE t.from_account_id END AS counterpart_account_id,
-                    CASE WHEN t.from_account_id = e.account_id THEN ta.name ELSE fa.name END AS counterpart_account_name,
+                    CASE WHEN t.from_account_id = oe.account_id THEN 'transfer_out' ELSE 'transfer_in' END AS kind,
+                    t.name, t.note, oe.account_id, a.name AS account_name,
+                    CASE WHEN t.from_account_id = oe.account_id THEN t.to_account_id ELSE t.from_account_id END AS counterpart_account_id,
+                    CASE WHEN t.from_account_id = oe.account_id THEN ta.name ELSE fa.name END AS counterpart_account_name,
                     t.amount_minor, t.occurred_at, NULL AS category_id, NULL AS category_name,
-                    NULL AS category_parent_name, e.reconciled, t.id AS transfer_id
+                    NULL AS category_parent_name, oe.reconciled, t.id AS transfer_id
              FROM transfers t
-             JOIN entries e ON e.transfer_id = t.id
-             JOIN accounts a ON a.id = e.account_id
+             JOIN entries oe ON oe.transfer_id = t.id
+             JOIN accounts a ON a.id = oe.account_id
              JOIN accounts fa ON fa.id = t.from_account_id
              JOIN accounts ta ON ta.id = t.to_account_id
-             WHERE e.account_id = ",
+             WHERE oe.account_id = ",
         );
         transfers_query.push_bind(account_id);
+        Self::apply_transfer_filters(&mut transfers_query, &filter);
         transfers_query.push(
-            " AND e.kind IN ('transfer_in', 'transfer_out') ORDER BY t.occurred_at DESC, t.id DESC",
+            " AND oe.kind IN ('transfer_in', 'transfer_out') ORDER BY t.occurred_at DESC, t.id DESC",
         );
         let transfers = transfers_query
             .build_query_as::<LedgerEntry>()

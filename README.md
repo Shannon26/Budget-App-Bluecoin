@@ -155,7 +155,7 @@ All amounts are integer minor units.
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/state` | Accounts, totals, categories, category totals, saved filters, recent combined ledger |
 | `POST` | `/api/accounts` | Create an INR account with opening balance |
-| `GET` | `/api/accounts/:id/history` | Paginated account-specific ledger with relevant transfer side and full-day totals |
+| `GET` | `/api/accounts/:id/history` | Paginated account-specific ledger with canonical ledger filters, relevant transfer side, filtered count, and full-day totals |
 | `GET` | `/api/ledger` | Paginated filtered combined ledger with full-day totals; supports `limit` and `offset` |
 | `GET` | `/api/ledger/export` | UTF-8 CSV of every transaction matching the same filter query parameters; ignores `limit` and `offset` |
 | `POST` | `/api/transactions` | Create income/expense |
@@ -173,6 +173,8 @@ All amounts are integer minor units.
 | `DELETE` | `/api/category-budgets/:category_id?month=YYYY-MM` | Remove a monthly category limit |
 | `GET/POST` | `/api/filters` | List/create named filters |
 | `PUT/DELETE` | `/api/filters/:id` | Update/delete named filter |
+
+Account history accepts the same filter query parameters as `/api/ledger`. The path account is always pinned: `account_id` may be omitted or match the path ID; a conflicting value returns HTTP 400. Transfers still show only the side affecting that account.
 
 Example transaction:
 

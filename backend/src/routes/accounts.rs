@@ -22,10 +22,21 @@ pub(crate) async fn account_history(
     Path(account_id): Path<i64>,
     Query(page): Query<LedgerPageQuery>,
 ) -> AppResult<Json<LedgerPage>> {
+    if page
+        .account_id
+        .is_some_and(|filter_account_id| filter_account_id != account_id)
+    {
+        return Err(crate::error::AppError::BadRequest(
+            "account_id filter must match the account path".to_string(),
+        ));
+    }
+    let limit = page.limit;
+    let offset = page.offset;
+    let filter = page.into_filter();
     Ok(Json(
         state
             .store
-            .account_history(account_id, page.limit, page.offset)
+            .account_history(account_id, filter, limit, offset)
             .await?,
     ))
 }
