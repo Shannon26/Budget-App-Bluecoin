@@ -15,6 +15,26 @@ pub(crate) async fn list_category_budgets(
     ))
 }
 
+pub(crate) async fn set_overall_budget(
+    State(state): State<AppState>,
+    Query(query): Query<CategoryBudgetQuery>,
+    Json(request): Json<OverallBudgetRequest>,
+) -> AppResult<Json<MonthlyCategoryBudgets>> {
+    Ok(Json(
+        state
+            .store
+            .set_overall_budget(&query.month, request.amount_minor)
+            .await?,
+    ))
+}
+
+pub(crate) async fn remove_overall_budget(
+    State(state): State<AppState>,
+    Query(query): Query<CategoryBudgetQuery>,
+) -> AppResult<Json<MonthlyCategoryBudgets>> {
+    Ok(Json(state.store.remove_overall_budget(&query.month).await?))
+}
+
 pub(crate) async fn set_category_budget(
     State(state): State<AppState>,
     Path(category_id): Path<i64>,

@@ -273,6 +273,12 @@ export interface CategoryBudget {
   remaining_minor: number | null;
 }
 
+export interface OverallBudgetSummary {
+  limit_minor: number | null;
+  spent_minor: number;
+  remaining_minor: number | null;
+}
+
 export interface MonthlyCategoryBudgets {
   month: string;
   total_spent_minor: number;
@@ -280,6 +286,7 @@ export interface MonthlyCategoryBudgets {
   expense_count: number;
   invalid_date_expense_count: number;
   invalid_date_spent_minor: number;
+  overall_budget: OverallBudgetSummary;
   categories: CategoryBudget[];
 }
 
