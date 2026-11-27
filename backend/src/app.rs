@@ -1,4 +1,8 @@
+use crate::assistant::AssistantClient;
+use crate::error::{AppError, AppResult};
+use crate::models::MemberId;
 use crate::store::Store;
+use axum::http::request::Parts;
 use axum::http::{header, Method};
 use axum::routing::{get, post};
 use axum::Router;
@@ -11,9 +15,92 @@ use crate::routes;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) store: Store,
+    pub(crate) identity: IdentityConfig,
+    pub(crate) assistant: AssistantClient,
 }
 
+/// The trusted identity boundary. Household mode is opt-in so all legacy
+/// callers and tests keep the single-member behavior they already rely on.
+/// Production sign-in is a separate deployment decision; the shared token is
+/// a placeholder that only the configured deployment can supply.
+#[derive(Clone, Debug)]
+pub(crate) struct IdentityConfig {
+    pub(crate) household_enabled: bool,
+    pub(crate) shared_token: Option<String>,
+    pub(crate) default_member_id: i64,
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        Self {
+            household_enabled: false,
+            shared_token: None,
+            default_member_id: 1,
+        }
+    }
+}
+
+impl IdentityConfig {
+    pub(crate) fn from_env() -> Self {
+        let household_enabled = std::env::var("PAISA_HOUSEHOLD_ENABLED")
+            .map(|value| value == "true" || value == "1")
+            .unwrap_or(false);
+        let shared_token = std::env::var("PAISA_MEMBER_TOKEN")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let default_member_id = std::env::var("PAISA_DEFAULT_MEMBER_ID")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1);
+        Self {
+            household_enabled,
+            shared_token,
+            default_member_id,
+        }
+    }
+
+    pub(crate) fn resolve_member(&self, parts: &Parts) -> AppResult<MemberId> {
+        if !self.household_enabled {
+            return Ok(MemberId(self.default_member_id));
+        }
+        let expected = self.shared_token.as_deref().ok_or_else(|| {
+            AppError::Unauthorized("household access is not configured".to_string())
+        })?;
+        let token = parts
+            .headers
+            .get("x-paisa-member-token")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if token != expected {
+            return Err(AppError::Unauthorized(
+                "a valid member token is required".to_string(),
+            ));
+        }
+        let raw = parts
+            .headers
+            .get("x-paisa-member")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("a member identity is required".to_string()))?;
+        let id: i64 = raw
+            .parse()
+            .map_err(|_| AppError::BadRequest("invalid member identity".to_string()))?;
+        if id <= 0 {
+            return Err(AppError::BadRequest("invalid member identity".to_string()));
+        }
+        Ok(MemberId(id))
+    }
+}
+
+#[allow(dead_code)]
 pub(crate) fn build_router(pool: SqlitePool) -> Router {
+    build_router_with(pool, IdentityConfig::default(), AssistantClient::default())
+}
+
+pub(crate) fn build_router_with(
+    pool: SqlitePool,
+    identity: IdentityConfig,
+    assistant: AssistantClient,
+) -> Router {
     let cors = CorsLayer::new()
         .allow_origin([
             "http://127.0.0.1:5173".parse().unwrap(),
@@ -27,7 +114,11 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([header::CONTENT_TYPE]);
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::HeaderName::from_static("x-paisa-member"),
+            header::HeaderName::from_static("x-paisa-member-token"),
+        ]);
 
     Router::new()
         .route("/api/health", get(routes::system::health))
@@ -145,9 +236,69 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             axum::routing::put(routes::filters::update_saved_filter)
                 .delete(routes::filters::delete_saved_filter),
         )
+        // Command Center: private drafts, atomic batch save, transfer requests.
+        .route("/api/draft", get(routes::drafts::load_draft))
+        .route("/api/draft/prompt", post(routes::drafts::append_prompt))
+        .route("/api/draft/rows", post(routes::drafts::add_row))
+        .route(
+            "/api/draft/rows/:row_id",
+            axum::routing::put(routes::drafts::replace_row).delete(routes::drafts::remove_row),
+        )
+        .route(
+            "/api/draft/rows/assign-account",
+            post(routes::drafts::assign_account),
+        )
+        .route(
+            "/api/draft/remember-alias",
+            post(routes::drafts::remember_alias),
+        )
+        .route("/api/draft/discard", post(routes::drafts::discard))
+        .route("/api/draft/save", post(routes::drafts::save))
+        .route(
+            "/api/transfer-requests",
+            get(routes::transfer_requests::list_requests),
+        )
+        .route(
+            "/api/transfer-requests/:id/approve",
+            post(routes::transfer_requests::approve),
+        )
+        .route(
+            "/api/transfer-requests/:id/decline",
+            post(routes::transfer_requests::decline),
+        )
+        .route(
+            "/api/transfer-requests/:id/cancel",
+            post(routes::transfer_requests::cancel),
+        )
+        .route(
+            "/api/transfers/:id/reverse",
+            post(routes::transfer_requests::reverse),
+        )
+        .route(
+            "/api/household/members",
+            get(routes::household::list_members),
+        )
+        .route(
+            "/api/household/accounts",
+            get(routes::household::accounts_view),
+        )
+        .route(
+            "/api/household/assignments",
+            get(routes::household::assignments),
+        )
+        .route(
+            "/api/household/assignments/propose",
+            post(routes::household::propose_assignments),
+        )
+        .route(
+            "/api/household/assignments/confirm",
+            post(routes::household::confirm_assignments),
+        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             store: Store::new(pool),
+            identity,
+            assistant,
         })
 }

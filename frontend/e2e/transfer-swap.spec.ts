@@ -204,6 +204,8 @@ test("transfer endpoint swaps are explicit, keyboard accessible, and persisted o
   expect(baselineState.totals).toEqual({ income_minor: 12_000, expense_minor: 3_000 });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.locator(`[data-account-name="${SOURCE_NAME}"]`)).toBeVisible();
   await expect(page.locator(`[data-account-name="${DESTINATION_NAME}"]`)).toBeVisible();
   await expect(page.getByTestId("transfer-from").locator(`option[value="${hiddenId}"]`)).toHaveCount(0);

@@ -184,6 +184,8 @@ test("preferred unnamed transaction name persists locally and only fills saved b
   )!.id;
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.locator(`[data-account-name="${ACCOUNT_NAME}"]`)).toBeVisible();
   const preference = page.getByLabel("Preferred name for unnamed transactions", { exact: true });
   const clearPreference = page.getByRole("button", { name: "Clear preferred name", exact: true });
@@ -195,6 +197,8 @@ test("preferred unnamed transaction name persists locally and only fills saved b
   expect(preferenceWrites.writes).toEqual([]);
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await expect(preference).toHaveValue(PREFERRED_NAME);
   expect(preferenceWrites.writes).toEqual([]);
 
@@ -286,6 +290,7 @@ test("preferred unnamed transaction name persists locally and only fills saved b
   await expect(preference).toHaveValue("");
   expect(clearWrites.writes).toEqual([]);
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(preference).toHaveValue("");
   expect(clearWrites.writes).toEqual([]);
   clearWrites.stop();
@@ -365,6 +370,8 @@ test("unavailable browser storage leaves the preferred name usable for the sessi
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.locator(`[data-account-name="${storageAccountName}"]`)).toBeVisible();
   await page.getByTestId("transaction-account").selectOption(String(accountId));
   const preference = page.getByLabel("Preferred name for unnamed transactions", { exact: true });
@@ -407,6 +414,8 @@ test("unavailable browser storage leaves the preferred name usable for the sessi
   expect(pageErrors).toEqual([]);
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await expect(preference).toHaveValue("");
   await expect(page.locator(`[data-account-name="${storageAccountName}"]`)).toBeVisible();
 });

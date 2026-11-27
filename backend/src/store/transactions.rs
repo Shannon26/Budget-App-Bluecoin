@@ -72,12 +72,17 @@ impl Store {
         Ok(())
     }
 
-    pub async fn create_transaction(&self, request: TransactionRequest) -> AppResult<i64> {
+    /// Executor-bound entry write shared by the standalone transaction route
+    /// and the Command Center batch save. Callers own permission checks and
+    /// the surrounding transaction.
+    pub(super) async fn write_entry(
+        transaction: &mut SqliteConnection,
+        request: TransactionRequest,
+    ) -> AppResult<i64> {
         Self::validate_amount(request.amount_minor)?;
         let note = Self::clean_note(request.note)?;
         let name = Self::clean_name(request.name, &note, request.kind.as_str())?;
         let occurred_at = Self::clean_timestamp(request.occurred_at)?;
-        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         Store::load_account(&mut *transaction, request.account_id).await?;
         Self::validate_category(
             &mut *transaction,
@@ -85,7 +90,7 @@ impl Store {
             request.kind.as_str(),
         )
         .await?;
-        let label_ids = Store::validate_label_ids(&mut transaction, request.labels).await?;
+        let label_ids = Store::validate_label_ids(&mut *transaction, request.labels).await?;
         let id = sqlx::query_scalar(
             "INSERT INTO entries
                 (kind, account_id, amount_minor, name, category_id, reconciled, note, occurred_at, created_at, transfer_id)
@@ -103,7 +108,13 @@ impl Store {
         .bind(Utc::now().to_rfc3339())
         .fetch_one(&mut *transaction)
         .await?;
-        Store::replace_entry_labels(&mut transaction, id, label_ids).await?;
+        Store::replace_entry_labels(transaction, id, label_ids).await?;
+        Ok(id)
+    }
+
+    pub async fn create_transaction(&self, request: TransactionRequest) -> AppResult<i64> {
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let id = Self::write_entry(&mut transaction, request).await?;
         transaction.commit().await?;
         Ok(id)
     }

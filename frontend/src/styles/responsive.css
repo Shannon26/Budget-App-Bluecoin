@@ -111,5 +111,144 @@
   .detail-list div {
     grid-template-columns: 90px minmax(0, 1fr);
   }
+
+  /* Command Center: one-handed composer, scrollable rows above a pinned Save. */
+  .cc-shell {
+    gap: 14px;
+    margin-top: 14px;
+  }
+
+  .cc-card,
+  .cc-review-row,
+  .cc-assign-bar,
+  .cc-followup,
+  .cc-transfer-section,
+  .cc-account-owner-bar,
+  .cc-assignment-review {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .cc-composer-input,
+  .cc-followup textarea {
+    min-height: 116px;
+    font-size: 16px;
+  }
+
+  .cc-prepare {
+    width: 100%;
+    max-width: none;
+  }
+
+  .cc-entry-points {
+    grid-template-columns: 1fr;
+  }
+
+  .cc-action-card {
+    min-height: 64px;
+  }
+
+  .cc-row-top {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .cc-row-check {
+    grid-column: 1 / -1;
+  }
+
+  .cc-row-info {
+    grid-column: 1;
+  }
+
+  .cc-row-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .cc-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cc-assign-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .cc-review-list {
+    padding-bottom: 150px;
+  }
+
+  .cc-save-bar {
+    gap: 8px;
+    padding: 10px 2px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .cc-save-bar .primary-button {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .cc-save-bar .cc-discard {
+    flex: 0 0 auto;
+    padding: 0 10px;
+  }
+
+  .cc-account-list {
+    grid-template-columns: 1fr;
+  }
+
+  .cc-assignment-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .cc-assignment-row select {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 430px) {
+  .cc-page-heading h1 {
+    font-size: 28px;
+  }
+
+  .cc-review-toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .cc-review-row {
+    padding: 12px;
+  }
+
+  .cc-row-actions {
+    flex-direction: column;
+  }
+
+  .cc-row-actions .cc-button {
+    min-height: 38px;
+  }
+
+  .cc-save-bar .cc-discard {
+    font-size: 11px;
+  }
+
+  .cc-assign-bar,
+  .cc-followup {
+    padding: 14px;
+  }
+}
+
+/* Phone keyboard open: the composer and pinned Save stay in reach. */
+@media (max-width: 720px) and (max-height: 620px) {
+  .cc-composer-input {
+    min-height: 84px;
+  }
+
+  .cc-review-list {
+    padding-bottom: 170px;
+  }
+
+  .cc-page-heading .cc-lede {
+    display: none;
+  }
 }
 

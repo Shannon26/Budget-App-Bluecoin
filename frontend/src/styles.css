@@ -5,4 +5,5 @@
 @import "./features/categories/categories.css";
 @import "./features/reports/reports.css";
 @import "./features/labels/labels.css";
+@import "./features/command-center/command-center.css";
 @import "./styles/responsive.css";

@@ -113,6 +113,8 @@ test("overall monthly cap tracks raw spending and persists independently of cate
   expect((await request.delete(`/api/categories/${diningId}`)).ok()).toBeTruthy();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(month);
   await expect(page.getByTestId("budget-total-spent")).toHaveText("₹3,150.00");
@@ -144,6 +146,8 @@ test("overall monthly cap tracks raw spending and persists independently of cate
   await expect(page.getByTestId("overall-budget-remaining")).toHaveText("₹850.00 left");
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(month);
   await expect(page.getByTestId("overall-budget-limit")).toHaveText("₹4,000.00");
@@ -164,6 +168,7 @@ test("overall monthly cap tracks raw spending and persists independently of cate
     ).ok(),
   ).toBeTruthy();
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(month);
   await expect(page.getByTestId("overall-budget-spent")).toHaveText("₹3,350.00");
@@ -264,6 +269,8 @@ test("overall cap keeps loading error and stale month responses honest", async (
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(monthA);
   await januaryStarted.promise;

@@ -5,7 +5,7 @@ use chrono::Utc;
 use sqlx::SqliteConnection;
 
 impl Store {
-    async fn write_transfer(
+    pub(super) async fn write_transfer(
         transaction: &mut SqliteConnection,
         request: TransferRequest,
     ) -> AppResult<i64> {

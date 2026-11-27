@@ -74,6 +74,62 @@ Stop either process with `Ctrl+C`.
 - One combined transfer row in the main ledger; account history shows only the relevant transfer side.
 - Transfer create/edit/delete updates both legs atomically and never changes income/expense totals.
 
+## Command Center
+
+Command Center is the default home screen. It turns a typed or dictated description of a day's
+activity into reviewed ledger entries with one Save. See
+[`docs/command-center-plan.md`](docs/command-center-plan.md) for the product behavior and
+[`docs/command-center-api-contract.md`](docs/command-center-api-contract.md) for the API shapes.
+
+- **Draft** — one private draft per household member survives refreshes and syncs with that
+  member's access. **Prepare** appends a prompt; **Add details** adds a follow-up; **Add manually**
+  and **Add accounts** create rows directly. Follow-ups target stable row IDs and keep unrelated
+  manual edits. **Prompt history** is collapsed by default, and **Discard** clears the draft.
+- **Review** — rows are grouped by local date with descriptions, amounts, endpoints, and explicit
+  text issues. Select rows with unresolved accounts and assign one eligible account to all of them.
+  Every incomplete row must be resolved before **Save**. Dates resolve against the prompt's local
+  day; an itemized total mismatch, ambiguous account, or unclear balance must be clarified.
+- **Atomic save** — the reviewed revision is revalidated and committed in one `BEGIN IMMEDIATE`
+  transaction: new accounts first, then expenses, income, and same-owner transfers. A forced
+  failure rolls everything back and keeps the draft. A repeated Save of the same member and
+  revision returns the same receipt and posts nothing. New accounts created from a stated current
+  balance store the opening balance calculated by walking back the confirmed activity.
+- **Receipt** — counts saved accounts and entries, lists pending transfer requests separately,
+  and links to the saved activity in Ledger.
+- **Household** — every account has one owner. The creator owns new accounts; legacy accounts are
+  assigned by the designated member after a review step, and confirmed ownership cannot change.
+  Both members can read all saved accounts and activity; writes to another member's account are
+  rejected by the ordinary API and the draft save path alike. Transcripts, nicknames, and drafts
+  are private to their member.
+- **Transfer requests** — a cross-member transfer in a batch becomes a pending request with no
+  balance or ledger effect. The receiving owner approves or declines; the sender can cancel.
+  Approval rechecks the endpoints and posts exactly two legs under the requested date in one
+  transaction, recording the approval time separately. Posted cross-member transfers cannot be
+  edited directly; corrections use an approved reversal in the opposite direction.
+- **Assistant** — `backend/src/assistant.rs` sends only the submitted text, local date, unsaved
+  rows, and a small allowlist of relevant account/category names. It never reads ledger history or
+  balances. Without a key the assistant is disabled and manual capture still works;
+  `PAISA_ASSISTANT_MODE=stub` provides deterministic offline pragmas for tests.
+
+### Household identity configuration
+
+Household mode is opt-in. Without it, existing callers resolve to a single default member and all
+legacy flows are unchanged. To enable it, set these on the backend (the shared token is a
+placeholder boundary until a deployment supplies verified sign-in). The backend also reads an
+allowlisted set of these keys from Git-ignored `backend/.env`; process environment values win.
+
+| Variable | Purpose |
+| --- | --- |
+| `PAISA_HOUSEHOLD_ENABLED` | `true` or `1` requires a verified member on every request. |
+| `PAISA_MEMBER_TOKEN` | Shared token required in `x-paisa-member-token`. |
+| `PAISA_DEFAULT_MEMBER_ID` | Fallback member while household mode is off (default `1`). |
+| `OPENROUTER_API_KEY` | Optional assistant key; kept only in Git-ignored `backend/.env`. |
+| `OPENROUTER_MODEL`, `OPENROUTER_URL` | Optional model/endpoint overrides. |
+| `PAISA_ASSISTANT_MODE` | `stub` for offline deterministic proposals; `off` disables. |
+
+The frontend sends `x-paisa-member` and `x-paisa-member-token` only when
+`VITE_PAISA_HOUSEHOLD_ENABLED === "true"`; member id and token come from browser storage.
+
 ## Acceptance flow
 
 The repeatable browser test uses a clean database and verifies:
@@ -143,9 +199,22 @@ The backend suite covers:
 - transfer edit/delete updating both accounts without changing totals;
 - rollback when either transfer-leg insert or update fails;
 - legacy-shaped rows remaining uncategorized with unchanged balances;
-- INR-only account validation and strict amount handling.
+- INR-only account validation and strict amount handling;
+- household membership and owner-scoped writes, designated-member assignment review, and
+  read-only other-member views;
+- atomic batch save with new accounts, receipt replay, unresolved-row rejection, rollback on a
+  forced mid-batch failure, and backwards-reconciled current balances;
+- private prompt/nickname isolation, assistant allowlist, stub proposals, and manual completion
+  while the assistant is unavailable;
+- pending transfer requests, single approval with both legs, decline/cancel, posted-transfer
+  protection, and separately approved reversals.
 
-The frontend unit suite covers exact paise parsing, Western/Indian grouping, malformed separator rejection, fractional paise, negative transaction amounts, negative opening balances, safe-integer limits, and INR formatting.
+The frontend unit suite covers exact paise parsing, Western/Indian grouping, malformed separator rejection, fractional paise, negative transaction amounts, negative opening balances, safe-integer limits, INR formatting, and Command Center draft grouping/receipt helpers.
+
+The browser suite also covers the Command Center flow: a prompt batch becomes reviewable rows,
+account assignment resolves them, Save posts to Ledger with a receipt, a new account and its
+expense save together, a draft survives reload, and a failed prompt keeps its text while manual
+save still succeeds.
 
 ## API
 
@@ -181,6 +250,23 @@ All amounts are integer minor units.
 | `PUT` | `/api/labels/:id` | Rename a reusable label |
 | `GET/POST` | `/api/filters` | List/create named filters |
 | `PUT/DELETE` | `/api/filters/:id` | Update/delete named filter |
+| `GET` | `/api/draft` | Current private draft with rows, prompts, and revision |
+| `POST` | `/api/draft/prompt` | Append a prompt and apply an assistant proposal |
+| `POST/PUT/DELETE` | `/api/draft/rows` or `/api/draft/rows/:row_id` | Edit draft rows manually |
+| `POST` | `/api/draft/rows/assign-account` | Assign one account to selected rows |
+| `POST` | `/api/draft/remember-alias` | Remember a personal account nickname |
+| `POST` | `/api/draft/discard` | Clear the active draft |
+| `POST` | `/api/draft/save` | Save the reviewed revision; idempotent per member/revision |
+| `GET` | `/api/transfer-requests` | Incoming/outgoing requests and counts |
+| `POST` | `/api/transfer-requests/:id/approve` | Approve an incoming request (recipient only) |
+| `POST` | `/api/transfer-requests/:id/decline` | Decline an incoming request (recipient only) |
+| `POST` | `/api/transfer-requests/:id/cancel` | Cancel a pending request (sender only) |
+| `POST` | `/api/transfers/:id/reverse` | Start a reversal request from a posted transfer |
+| `GET` | `/api/household/members` | Household member list |
+| `GET` | `/api/household/accounts?member_id=` | Own or other-member read-only account view |
+| `GET` | `/api/household/assignments` | Designated member's ownership review |
+| `POST` | `/api/household/assignments/propose` | Propose account ownership assignments |
+| `POST` | `/api/household/assignments/confirm` | Confirm assignments atomically |
 
 Transaction and transfer requests accept optional `labels` arrays. Omitting the array preserves existing assignments on edit; an explicit empty array clears them. Labels are returned on ledger/detail/history entries, copied by duplication, and removed when their owning entry/transfer is deleted. F13 does not expose global label deletion, so historical assignments are preserved. A transfer carries one label set shown on both history sides. F13 intentionally does not add label filtering/reporting or change CSV columns and report totals; those remain F14/F15 work.
 
@@ -329,7 +415,14 @@ Restart with the startup command above.
 
 ## Verified result
 
-Current F09 verification on 2026-11-27: Rust fmt/check, **86 Rust tests**, **11 frontend tests**, the production build, `npm audit` (0 vulnerabilities), **27 browser tests** on disposable SQLite, and whitespace checks passed. F09 remains uncommitted pending review.
+Command Center verification: Rust fmt/check, **108 Rust tests** (including household isolation,
+atomic batch rollback/retry, transfer approval/reversal, and assistant stub/allowlist suites),
+**21 frontend unit tests**, the production build, and `npm audit` (0 vulnerabilities) pass. The
+four new `command-center` browser tests pass against the disposable SQLite runner. With the suite
+serialized on its single shared database, the current tree is **34 passed / 10 failed** and the
+untouched baseline is **30 passed / 10 failed**: the same ten legacy failures (shared-database
+ordering and strict selector behavior in this environment), with no new regressions from Command
+Center.
 
 Historical baseline verified on 2026-11-26:
 

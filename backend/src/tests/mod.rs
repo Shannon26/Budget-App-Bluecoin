@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::IdentityConfig;
+use crate::assistant::AssistantClient;
 use crate::error::AppError;
 use crate::models::*;
 use crate::store::Store;
@@ -28,6 +30,61 @@ async fn setup() -> (Router, SqlitePool, TempDir) {
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     (build_router(pool.clone()), pool, directory)
+}
+
+/// Household-mode fixture: requests must present a verified member token.
+async fn setup_household() -> (Router, SqlitePool, TempDir) {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("test.db");
+    let url = format!("sqlite://{}?mode=rwc", database_path.display());
+    let options = SqliteConnectOptions::from_str(&url)
+        .unwrap()
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(3)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let identity = IdentityConfig {
+        household_enabled: true,
+        shared_token: Some("test-token".to_string()),
+        default_member_id: 1,
+    };
+    (
+        build_router_with(pool.clone(), identity, AssistantClient::default()),
+        pool,
+        directory,
+    )
+}
+
+async fn send_json_as(
+    app: &Router,
+    member_id: i64,
+    method: &str,
+    uri: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-paisa-member", member_id.to_string())
+        .header("x-paisa-member-token", "test-token")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+async fn get_as(app: &Router, member_id: i64, uri: &str) -> (StatusCode, Value) {
+    send_json_as(app, member_id, "GET", uri, json!({})).await
 }
 
 async fn send_json(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -244,13 +301,17 @@ fn budget_row(body: &Value, category_id: i64) -> &Value {
 }
 
 mod accounts;
+mod assistant;
 mod budgets;
 mod categories;
+mod command_center;
 mod credit_cards;
 mod csv_export;
 mod filters;
+mod household;
 mod labels;
 mod ledger;
 mod reports;
 mod transactions;
+mod transfer_requests;
 mod transfers;

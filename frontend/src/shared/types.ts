@@ -367,3 +367,184 @@ export interface BudgetState {
   labels: Label[];
   entries: LedgerEntry[];
 }
+
+// Command Center DTOs. Keys mirror the backend JSON exactly (snake_case).
+
+export type DraftRowKind = "expense" | "income" | "transfer" | "new_account";
+export type DraftRowStatus = "ready" | "needs_input";
+export type DraftSource = "manual" | "assistant";
+
+export interface DraftRow {
+  row_id: string;
+  ordinal: number;
+  kind: DraftRowKind;
+  name: string;
+  amount_minor: number | null;
+  date: string | null;
+  account_id: number | null;
+  account_name: string | null;
+  to_account_id: number | null;
+  to_account_name: string | null;
+  category_id: number | null;
+  note: string;
+  status: DraftRowStatus;
+  issues: string[];
+  manual: boolean;
+  source: DraftSource;
+  proposed_row_id: string | null;
+  account_type: string | null;
+  opening_balance_minor: number | null;
+  current_balance_minor: number | null;
+  transfer_request: boolean;
+}
+
+export interface DraftPrompt {
+  submission_id: string;
+  seq: number;
+  role: string;
+  text: string;
+  created_at: string;
+}
+
+export interface Draft {
+  member_id: number;
+  revision: number;
+  local_date: string;
+  updated_at: string;
+  rows: DraftRow[];
+  prompts: DraftPrompt[];
+}
+
+export interface PromptRequest {
+  text: string;
+  client_prompt_id: string;
+  local_date?: string;
+}
+
+export interface DraftResponse {
+  draft: Draft;
+  message?: string;
+  clarification?: string;
+}
+
+export interface SaveReceipt {
+  batch_id: string;
+  member_id: number;
+  revision: number;
+  accounts_created: number[];
+  entry_ids: number[];
+  transfer_ids: number[];
+  pending_request_ids: number[];
+  created_at: string;
+}
+
+export interface OkResponse {
+  ok: true;
+}
+
+export interface AssistantNamedRef {
+  id: number;
+  name: string;
+}
+
+export interface AssistantCategoryRef {
+  id: number;
+  name: string;
+  kind: string;
+}
+
+export interface AssistantRequest {
+  text: string;
+  local_date: string;
+  rows: DraftRow[];
+  account_names: AssistantNamedRef[];
+  category_names: AssistantCategoryRef[];
+}
+
+export interface AssistantRowEdit {
+  row_id: string;
+  row: DraftRow;
+}
+
+export interface AssistantProposal {
+  rows: DraftRow[];
+  edits: AssistantRowEdit[];
+  message: string;
+  clarification?: string;
+}
+
+export type RequestStatus = "pending" | "approved" | "declined" | "canceled";
+
+export interface TransferRequestRecord {
+  id: number;
+  source_account_id: number;
+  source_account_name: string;
+  destination_account_id: number;
+  destination_account_name: string;
+  amount_minor: number;
+  name: string;
+  note: string;
+  requested_date: string;
+  sender_member_id: number;
+  recipient_member_id: number;
+  status: RequestStatus;
+  source_batch_id?: string | null;
+  original_transfer_id?: number | null;
+  created_at: string;
+  decided_at?: string | null;
+  decided_by_member_id?: number | null;
+  posted_transfer_id?: number | null;
+}
+
+export interface TransferRequestsResponse {
+  incoming: TransferRequestRecord[];
+  outgoing: TransferRequestRecord[];
+  incoming_count: number;
+  outgoing_count: number;
+}
+
+export interface DecisionResponse {
+  request: TransferRequestRecord;
+  posted_transfer_id?: number | null;
+}
+
+export interface Member {
+  id: number;
+  name: string;
+  is_designated: boolean;
+}
+
+export interface HouseholdAccount {
+  id: number;
+  name: string;
+  account_type: string;
+  currency: string;
+  opening_balance_minor: number;
+  balance_minor: number;
+  owner_member_id?: number | null;
+  can_write: boolean;
+}
+
+export interface HouseholdAccountView {
+  owner: Member;
+  accounts: HouseholdAccount[];
+  read_only: boolean;
+}
+
+export interface AssignmentRow {
+  account_id: number;
+  account_name: string;
+  current_owner_member_id?: number | null;
+  proposed_owner_member_id?: number | null;
+  confirmed_owner_member_id?: number | null;
+}
+
+export interface AssignmentView {
+  can_assign: boolean;
+  accounts: AssignmentRow[];
+}
+
+export interface AssignmentSelection {
+  account_id: number;
+  owner_member_id: number;
+}

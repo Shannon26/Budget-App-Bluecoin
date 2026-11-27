@@ -18,6 +18,7 @@ test("cash flow trend reconciles with the existing reports", async ({ page, requ
   expect(trend.points[1].cash_flow).toEqual(earnings.current);
   expect(trend.points[1].net_worth_minor).toBe(balance.current_net_worth_minor);
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-cash-flow").click();
   await page.getByLabel("Ending month").fill("2026-11");
   await page.getByLabel("Months").selectOption("2");
@@ -36,6 +37,7 @@ test("cash flow report shows errors and recovers on retry", async ({ page }) => 
     }
   });
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-cash-flow").click();
   await expect(page.getByRole("alert")).toContainText("Report unavailable");
   fail = false;

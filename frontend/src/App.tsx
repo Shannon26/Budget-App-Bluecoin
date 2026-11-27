@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./shared/api";
 import { localDateValue } from "./shared/date";
 import type { BudgetState } from "./shared/types";
+import CommandCenter, { type CommandScreen } from "./features/command-center/CommandCenter";
 import BalanceSheet from "./features/reports/BalanceSheet";
 import CashFlowTrend from "./features/reports/CashFlowTrend";
 import CreditCardSummary from "./features/reports/CreditCardSummary";
@@ -26,11 +27,11 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "label-report" | "balance" | "cards" | "cash-flow";
+type Tab = CommandScreen | "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "label-report" | "balance" | "cards" | "cash-flow";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [activeTab, setActiveTab] = useState<Tab>("command-center");
   const [historyAccountId, setHistoryAccountId] = useState<number | null>(null);
   const [budgetMonth, setBudgetMonth] = useState(() => localDateValue().slice(0, 7));
   const [invalidDateCorrection, setInvalidDateCorrection] = useState(false);
@@ -83,6 +84,15 @@ export default function App() {
       </header>
 
       <nav className="main-nav" aria-label="Main navigation">
+        <button
+          data-testid="nav-command-center"
+          className={activeTab === "command-center" || activeTab === "review" || activeTab === "transfer-review" || activeTab === "accounts" ? "active" : ""}
+          aria-current={activeTab === "command-center" ? "page" : undefined}
+          type="button"
+          onClick={() => setActiveTab("command-center")}
+        >
+          Command Center
+        </button>
         <button
           data-testid="nav-overview"
           className={activeTab === "overview" ? "active" : ""}
@@ -199,6 +209,21 @@ export default function App() {
             <span>{error ? "!" : "✓"}</span>
             {error ?? notice}
           </div>
+        )}
+
+        {(activeTab === "command-center" ||
+          activeTab === "review" ||
+          activeTab === "transfer-review" ||
+          activeTab === "accounts") && (
+          <CommandCenter
+            screen={activeTab}
+            onScreen={(screen) => setActiveTab(screen)}
+            data={data}
+            refresh={refresh}
+            onMessage={onMessage}
+            onOpenLedger={() => setActiveTab("ledger")}
+            onOpenOverview={() => setActiveTab("overview")}
+          />
         )}
 
         {activeTab === "overview" && (

@@ -150,6 +150,8 @@ test("save and add another persists settings and clears only selected fields", a
   const categoryId = await groceriesId(request);
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.locator('[data-account-name="F30 primary account"]')).toBeVisible();
   await expect(page.getByTestId("transaction-account").locator(`option[value="${hiddenId}"]`)).toHaveCount(0);
   await expect(clearSetting(page, "name")).toBeChecked();
@@ -174,6 +176,7 @@ test("save and add another persists settings and clears only selected fields", a
 
   const today = await localToday(page);
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(page.getByLabel("Preferred name for unnamed transactions", { exact: true })).toHaveValue(
     "F30 preferred unnamed",
   );
@@ -289,6 +292,8 @@ test("ordinary save keeps its existing reset behavior regardless of clearing set
   const categoryId = await groceriesId(request);
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByLabel("Preferred name for unnamed transactions", { exact: true }).fill(
     "F30 normal preferred",
   );
@@ -367,6 +372,8 @@ test("failed and in-flight saves preserve drafts and both actions deduplicate re
   const baselineEntryCount = (await getState(request)).entries.length;
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await fillTransaction(page, {
     name: "F30 failure draft",
     accountId,
@@ -511,6 +518,8 @@ test("clearing settings remain usable in session when browser storage is unavail
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByLabel("Preferred name for unnamed transactions", { exact: true }).fill(
     "F30 session preferred",
   );
@@ -550,6 +559,8 @@ test("clearing settings remain usable in session when browser storage is unavail
   expect(pageErrors).toEqual([]);
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.getByLabel("Preferred name for unnamed transactions", { exact: true })).toHaveValue("");
   await expect(clearSetting(page, "name")).toBeChecked();
   await expect(clearSetting(page, "amount")).toBeChecked();

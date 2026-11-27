@@ -107,6 +107,7 @@ async function openEntry(page: import("@playwright/test").Page, kind: string, na
 
 test("account type catalog is usable in the empty overview", async ({ page }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await expect(page.getByText("Start with an account", { exact: true })).toBeVisible();
   await expect(page.getByTestId("account-type")).toBeEnabled();
   await expect(page.getByTestId("account-type-group")).toHaveText("Unclassified");
@@ -118,6 +119,7 @@ test("account type catalog is usable in the empty overview", async ({ page }) =>
 
 test("category editor keeps new hierarchy changes at two levels", async ({ page }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-categories").click();
   await expect(page.locator(".category-row").first()).toBeVisible();
 
@@ -176,6 +178,7 @@ test("category editor keeps new hierarchy changes at two levels", async ({ page 
 
 test("milestone 2 category and transaction management flow", async ({ page, request }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await createAccount(page, "E2E Checking", "5000");
   await createAccount(page, "E2E Savings", "1000");
 
@@ -233,6 +236,7 @@ test("milestone 2 category and transaction management flow", async ({ page, requ
   await page.getByTestId("save-filter-name").fill("Reconciled dining");
   await page.getByTestId("save-filter").click();
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("saved-filter").selectOption({ label: "Reconciled dining" });
   await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Dinner" })).toHaveCount(1);
@@ -342,6 +346,8 @@ test("ledger and account history load older same-day entries with complete daily
   }
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("ledger-search").fill("Pagination expense");
   await page.getByTestId("filter-account").selectOption(String(accountId));
@@ -416,6 +422,8 @@ test("ledger ignores superseded filter responses and stale errors", async ({ pag
   }
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   const releases = [deferred(), deferred()];
   const starts = [deferred(), deferred()];
@@ -500,6 +508,8 @@ test("ledger ignores a superseded account-history response", async ({ page, requ
   }
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   const release = deferred();
   const started = deferred();
   const finished = deferred();
@@ -564,6 +574,8 @@ test("ledger ignores an obsolete load-more page after a filter change", async ({
   expect(activeResponse.ok()).toBeTruthy();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("filter-account").selectOption(String(pageId));
   await page.getByTestId("apply-filters").click();
@@ -662,6 +674,8 @@ test("CSV download honors reopened saved filters and preserves transfers and spe
   expect(transferResponse.ok()).toBeTruthy();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("ledger-search").fill("SUM(1,2)");
   await page.getByTestId("filter-status").selectOption("true");
@@ -678,6 +692,7 @@ test("CSV download honors reopened saved filters and preserves transfers and spe
   await page.getByTestId("save-filter").click();
   await expect(page.getByText("Named filter saved.")).toBeVisible();
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("saved-filter").selectOption({ label: "CSV special reconciled" });
   await expect(specialRow).toHaveCount(1);
@@ -748,6 +763,7 @@ test("monthly category budgets roll up subcategories and persist independent mon
   request,
 }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   const defaultMonth = await page.getByTestId("budget-month").inputValue();
   expect(defaultMonth).toMatch(/^\d{4}-\d{2}$/);
@@ -821,6 +837,8 @@ test("monthly category budgets roll up subcategories and persist independent mon
   expect(transferResponse.ok()).toBeTruthy();
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(month);
   const foodRow = page.getByTestId(`budget-row-${foodId}`);
@@ -852,6 +870,8 @@ test("monthly category budgets roll up subcategories and persist independent mon
   await expect(foodRow.getByTestId(`budget-remaining-${foodId}`)).toContainText("1,200.00 left");
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await expect(page.getByTestId("budget-month")).toHaveValue(defaultMonth);
   await page.getByTestId("budget-month").fill(month);
@@ -868,6 +888,7 @@ test("monthly category budgets roll up subcategories and persist independent mon
   expect(archiveResponse.ok()).toBeTruthy();
   expect((await archiveResponse.json()).archived).toBe(true);
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(month);
   await expect(diningRow).toContainText("Archived");
@@ -918,6 +939,8 @@ test("budget responses stay tied to their selected month and invalid dates are f
   expect(budgetResponse.ok()).toBeTruthy();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   const oldLoad = deferred();
   const oldLoadStarted = deferred();
@@ -1188,6 +1211,8 @@ test("Net Earnings compares months and keeps report data tied to the active mont
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-net-earnings").click();
   const localMonth = await page.evaluate(() => {
     const now = new Date();
@@ -1346,6 +1371,8 @@ test("Items Summary ranks exact names and keeps month-scoped states honest", asy
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-items-summary").click();
   await expect(page.getByRole("heading", { name: "Items Summary", exact: true })).toBeVisible();
   await page.getByTestId("items-month").fill(currentMonth);
@@ -1414,6 +1441,8 @@ test("account types round-trip assets and liabilities without changing balances 
   const legacyId = (await legacyResponse.json()).id as number;
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   const legacyCard = page.locator(`[data-account-name="F01 Legacy"]`);
   await expect(
     legacyCard.getByTestId(`account-classification-${legacyId}`).locator("span"),
@@ -1445,6 +1474,7 @@ test("account types round-trip assets and liabilities without changing balances 
   });
   expect(expenseResponse.ok()).toBeTruthy();
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(balance(page, "F01 Checking")).toContainText("99,975.00");
 
   await checkingCard.getByTestId(`account-type-edit-${checkingId}`).click();
@@ -1473,6 +1503,8 @@ test("account types round-trip assets and liabilities without changing balances 
   await expect(balance(page, "F01 Checking")).toContainText("99,975.00");
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await expect(checkingCard.getByTestId(`account-classification-${checkingId}`)).toContainText(
     "Savings",
   );
@@ -1513,6 +1545,7 @@ test("account types round-trip assets and liabilities without changing balances 
     "Liability",
   );
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(legacyCard.getByTestId(`account-classification-${legacyId}`)).toContainText("Loan");
 });
 
@@ -1521,6 +1554,7 @@ test("account metadata persists and hide-selection preserves historical editing"
   request,
 }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("account-name").fill("F02 Main");
   await page.getByTestId("account-type").selectOption("checking");
   await page.getByTestId("account-note").fill("Main account note");
@@ -1536,6 +1570,7 @@ test("account metadata persists and hide-selection preserves historical editing"
   await expect(mainCard.getByTestId(`account-note-${mainId}`)).toHaveText("Main account note");
   await expect(mainCard.getByTestId(`account-opening-date-${mainId}`)).toContainText("2024-02-29");
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   mainCard = page.locator('[data-account-name="F02 Main"]');
   await expect(mainCard.getByTestId(`account-note-${mainId}`)).toHaveText("Main account note");
   await expect(mainCard.getByTestId(`account-opening-date-${mainId}`)).toContainText("2024-02-29");
@@ -1595,6 +1630,8 @@ test("account metadata persists and hide-selection preserves historical editing"
   ).toHaveCount(0);
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await expect(renamedCard.getByTestId(`account-visibility-${mainId}`)).toContainText(
     "Hidden from new pickers",
   );
@@ -1644,6 +1681,7 @@ test("account metadata persists and hide-selection preserves historical editing"
     }
   }
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(page.getByText(/All accounts are hidden from new entries/)).toBeVisible();
   await expect(page.getByTestId("transaction-account")).toBeDisabled();
   await expect(page.getByTestId("transaction-account")).toContainText("No selectable accounts");
@@ -1663,6 +1701,7 @@ test("account metadata persists and hide-selection preserves historical editing"
     page.getByTestId("transaction-account").locator("option").filter({ hasText: "F02 Renamed" }),
   ).toHaveCount(1);
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(renamedCard.getByTestId(`account-note-${mainId}`)).toHaveText("Restored note");
 });
 
@@ -1690,6 +1729,8 @@ test("hidden account selections stay cleared across refreshes until explicitly c
   }
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.getByTestId("transaction-account")).toHaveValue(String(aId));
   await expect(page.getByTestId("transfer-from")).toHaveValue(String(aId));
   await expect(page.getByTestId("transfer-to")).toHaveValue(String(bId));
@@ -1746,6 +1787,8 @@ test("hidden account selections stay cleared across refreshes until explicitly c
   await expect(page.getByTestId("transfer-to")).toHaveValue(String(aId));
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await expect(page.getByTestId("transaction-account")).toHaveValue(String(aId));
   await expect(page.getByTestId("transfer-from")).toHaveValue(String(aId));
   await expect(page.getByTestId("transfer-to")).toHaveValue(String(dId));
@@ -1767,6 +1810,7 @@ test("account editor sends only changed fields and preserves concurrent metadata
   expect(createdResponse.ok()).toBeTruthy();
   const accountId = (await createdResponse.json()).id as number;
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   const card = page.locator(`[data-account-name="Diff account"]`);
   await card.getByTestId(`account-type-edit-${accountId}`).click();
 
@@ -1790,6 +1834,7 @@ test("account editor sends only changed fields and preserves concurrent metadata
   await expect(renamedCard.getByTestId(`account-note-${accountId}`)).toHaveCount(0);
   await expect(renamedCard.getByTestId(`account-opening-date-${accountId}`)).toContainText("Not set");
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await expect(renamedCard.getByTestId(`account-note-${accountId}`)).toHaveCount(0);
   await expect(renamedCard.getByTestId(`account-opening-date-${accountId}`)).toContainText("Not set");
 });
@@ -1799,6 +1844,7 @@ test("credit card metadata and signed latest balance follow purchases and paymen
   request,
 }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await createAccount(page, "F03 Bank", "100000", "checking");
   await page.getByTestId("account-name").fill("F03 Card");
   await page.getByTestId("account-type").selectOption("credit_card");
@@ -1818,6 +1864,7 @@ test("credit card metadata and signed latest balance follow purchases and paymen
   await expect(card.getByTestId(`account-due-day-${cardId}`)).toContainText("2");
   await expect(card.getByTestId(`account-balance-state-${cardId}`)).toContainText("Settled");
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   card = page.locator('[data-account-name="F03 Card"]');
   await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toContainText("14,000.00");
 
@@ -1983,6 +2030,8 @@ test("Daily Summary charts seven days and keeps averages and states scoped to it
     });
 
     await page.goto("/");
+
+    await page.getByTestId("nav-overview").click();
     const panel = page.getByTestId("daily-summary");
     await expect(panel.getByRole("heading", { name: "Daily Summary", exact: true })).toBeVisible();
     await expect(page.getByTestId("total-balance")).toBeVisible();
@@ -2094,6 +2143,8 @@ test("Ledger dialogs trap and restore keyboard focus and guard busy dismissal", 
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await expect(page.getByTestId("nav-ledger")).toHaveAttribute("aria-current", "page");
   const row = page.getByTestId(`ledger-row-expense-${entryId}`);
@@ -2161,6 +2212,7 @@ test("Category editor keyboard flow and navigation current marker stay accessibl
   page,
 }) => {
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-categories").click();
   await expect(page.getByTestId("nav-categories")).toHaveAttribute("aria-current", "page");
   await expect(page.getByTestId("nav-overview")).not.toHaveAttribute("aria-current");
@@ -2266,6 +2318,8 @@ test("Budget invalid-date warning opens an authoritative correction flow and pre
   database.close();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-budgets").click();
   await page.getByTestId("budget-month").fill(month);
   await expect(page.getByTestId("budget-total-spent")).toHaveText("₹10.00");
@@ -2477,6 +2531,8 @@ test("Balance Sheet reconciles signed month-end groups and keeps report states s
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-balance-sheet").click();
   await expect(page.getByTestId("nav-balance-sheet")).toHaveAttribute("aria-current", "page");
   await page.getByTestId("balance-month").fill(selectedMonth);
@@ -2556,6 +2612,8 @@ test("Labels support management, atomic assignment, duplication, transfer histor
   const baselineState = await (await request.get("/api/state")).json();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-labels").click();
   await expect(page.getByTestId("nav-labels")).toHaveAttribute("aria-current", "page");
   for (const name of ["F13 Work", "F13 Personal"]) {
@@ -2619,6 +2677,8 @@ test("Labels support management, atomic assignment, duplication, transfer histor
   await expect(originalRow).not.toContainText("F13 Errands");
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await expect(page.getByTestId(`ledger-row-expense-${original}`)).toContainText("F13 Work");
   await openEntry(page, "expense", "F13 labelled expense");
@@ -2721,6 +2781,8 @@ test("Saved filters support rename-only, explicit applied-criteria replacement, 
   const otherId = (await otherResponse.json()).id as number;
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("ledger-search").fill("target");
   await page.getByTestId("apply-filters").click();
@@ -2757,6 +2819,8 @@ test("Saved filters support rename-only, explicit applied-criteria replacement, 
   await expect(page.getByTestId("edit-filter-name")).toHaveCount(0);
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("saved-filter").selectOption({ label: "F32 renamed" });
   await expect(page.getByTestId(`ledger-row-expense-${targetId}`)).toBeVisible();
@@ -2774,6 +2838,8 @@ test("Saved filters support rename-only, explicit applied-criteria replacement, 
   await expect(page.getByText("Saved filter updated.")).toBeVisible();
 
   await page.reload();
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("saved-filter").selectOption({ label: "F32 replaced" });
   await expect(page.getByTestId(`ledger-row-expense-${otherId}`)).toBeVisible();
@@ -2787,6 +2853,7 @@ test("Saved filters support rename-only, explicit applied-criteria replacement, 
   await page.getByTestId("save-filter-update").click();
   await expect(page.getByText("Saved filter updated.")).toBeVisible();
   await page.reload();
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-ledger").click();
   await page.getByTestId("saved-filter").selectOption({ label: "F32 final" });
   await expect(page.getByTestId(`ledger-row-expense-${otherId}`)).toBeVisible();
@@ -2911,6 +2978,7 @@ test("Card Summary separates cutoff balances, card-side payments, credits, and c
 
   const beforeView = await (await request.get("/api/state")).json();
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-card-summary").click();
   await expect(page.getByTestId("nav-card-summary")).toHaveAttribute("aria-current", "page");
   await expect(page.getByText("not an issuer-provided bill or minimum due", { exact: false })).toBeVisible();
@@ -3050,6 +3118,8 @@ test("Card Summary ignores stale selections and errors and recovers on retry", a
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-card-summary").click();
   await page.getByTestId("card-account").selectOption({ label: "F09 stale card A" });
   await page.getByTestId("card-anchor-date").fill("2036-11-27");
@@ -3090,6 +3160,7 @@ test("Card Summary has an explicit empty state without report-visible cards", as
     });
   });
   await page.goto("/");
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-card-summary").click();
   await expect(page.getByTestId("card-empty")).toContainText("No report-visible credit cards");
   await expect(page.getByTestId("card-account")).toBeDisabled();

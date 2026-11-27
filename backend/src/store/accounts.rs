@@ -3,6 +3,21 @@ use crate::date::is_valid_calendar_date;
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::Utc;
+use sqlx::{Executor, Sqlite};
+
+struct PreparedAccount {
+    name: String,
+    currency: String,
+    account_type: String,
+    note: String,
+    opening_date: Option<String>,
+    hide_from_selection: bool,
+    hide_from_reports: bool,
+    credit_limit_minor: Option<i64>,
+    cutoff_day: Option<i64>,
+    due_day: Option<i64>,
+    opening_balance_minor: i64,
+}
 
 impl Store {
     fn validate_account_name(value: String) -> AppResult<String> {
@@ -72,7 +87,7 @@ impl Store {
         ))
     }
 
-    pub async fn create_account(&self, request: CreateAccountRequest) -> AppResult<Account> {
+    fn prepare_account_insert(request: CreateAccountRequest) -> AppResult<PreparedAccount> {
         let name = Self::validate_account_name(request.name)?;
         let currency = request.currency.trim().to_ascii_uppercase();
         if currency != "INR" {
@@ -102,32 +117,72 @@ impl Store {
             }
             (None, None, None)
         };
+        Ok(PreparedAccount {
+            name,
+            currency,
+            account_type,
+            note,
+            opening_date,
+            hide_from_selection: request.hide_from_selection,
+            hide_from_reports: request.hide_from_reports,
+            credit_limit_minor,
+            cutoff_day,
+            due_day,
+            opening_balance_minor: request.opening_balance_minor,
+        })
+    }
 
+    /// Executor-bound insert shared by the standalone account route and the
+    /// Command Center batch save. `owner_member_id` is set for new accounts
+    /// created by a household member; legacy callers pass `None`.
+    pub(super) async fn insert_account<'e, E>(
+        executor: E,
+        request: CreateAccountRequest,
+        owner_member_id: Option<i64>,
+    ) -> AppResult<Account>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        let prepared = Self::prepare_account_insert(request)?;
         sqlx::query_as::<_, Account>(
             "INSERT INTO accounts
                 (name, currency, opening_balance_minor, created_at, account_type, note,
                  opening_date, hide_from_selection, hide_from_reports,
-                 credit_limit_minor, cutoff_day, due_day)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 credit_limit_minor, cutoff_day, due_day, owner_member_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id, name, currency, opening_balance_minor, created_at, account_type,
                        note, opening_date, hide_from_selection, hide_from_reports,
                        credit_limit_minor, cutoff_day, due_day",
         )
-        .bind(name)
-        .bind(currency)
-        .bind(request.opening_balance_minor)
+        .bind(prepared.name)
+        .bind(prepared.currency)
+        .bind(prepared.opening_balance_minor)
         .bind(Utc::now().to_rfc3339())
-        .bind(account_type)
-        .bind(note)
-        .bind(opening_date)
-        .bind(request.hide_from_selection)
-        .bind(request.hide_from_reports)
-        .bind(credit_limit_minor)
-        .bind(cutoff_day)
-        .bind(due_day)
-        .fetch_one(&self.pool)
+        .bind(prepared.account_type)
+        .bind(prepared.note)
+        .bind(prepared.opening_date)
+        .bind(prepared.hide_from_selection)
+        .bind(prepared.hide_from_reports)
+        .bind(prepared.credit_limit_minor)
+        .bind(prepared.cutoff_day)
+        .bind(prepared.due_day)
+        .bind(owner_member_id)
+        .fetch_one(executor)
         .await
         .map_err(AppError::from)
+    }
+
+    #[allow(dead_code)]
+    pub async fn create_account(&self, request: CreateAccountRequest) -> AppResult<Account> {
+        Self::insert_account(&self.pool, request, None).await
+    }
+
+    pub async fn create_account_owned(
+        &self,
+        request: CreateAccountRequest,
+        owner_member_id: i64,
+    ) -> AppResult<Account> {
+        Self::insert_account(&self.pool, request, Some(owner_member_id)).await
     }
 
     pub async fn update_account(

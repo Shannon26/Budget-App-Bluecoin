@@ -134,6 +134,8 @@ test("Label Report allocates ordinary posted entries once and distinguishes No L
   ).toBeTruthy();
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-label-report").click();
   await expect(page.getByTestId("nav-label-report")).toHaveAttribute("aria-current", "page");
   const localMonth = await page.evaluate(() => {
@@ -257,6 +259,8 @@ test("Label Report keeps loading stale error and retry states tied to the select
   });
 
   await page.goto("/");
+
+  await page.getByTestId("nav-overview").click();
   await page.getByTestId("nav-label-report").click();
   await page.getByTestId("label-report-month").fill(monthA);
   await januaryStarted.promise;

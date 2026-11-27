@@ -1,25 +1,35 @@
 mod accounts;
+mod assistant;
 mod budgets;
 mod categories;
 mod common;
+mod drafts;
 mod filters;
+mod household;
+mod identity;
 mod labels;
 mod ledger;
 mod reports;
 mod state;
 mod transactions;
+mod transfer_requests;
 mod transfers;
 
 pub use accounts::*;
+pub use assistant::*;
 pub use budgets::*;
 pub use categories::*;
 pub use common::*;
+pub use drafts::*;
 pub use filters::*;
+pub use household::*;
+pub(crate) use identity::*;
 pub use labels::*;
 pub use ledger::*;
 pub use reports::*;
 pub use state::*;
 pub use transactions::*;
+pub use transfer_requests::*;
 pub use transfers::*;
 
 pub type AppResult<T> = crate::error::AppResult<T>;
