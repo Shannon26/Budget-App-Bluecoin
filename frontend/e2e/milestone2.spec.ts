@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { expect, test, type Page } from "@playwright/test";
 
 function deferred() {
@@ -2189,4 +2190,130 @@ test("Category editor keyboard flow and navigation current marker stay accessibl
   await expect(page.getByTestId("nav-categories")).not.toHaveAttribute("aria-current");
   await page.getByTestId("nav-overview").click();
   await expect(page.getByTestId("nav-overview")).toHaveAttribute("aria-current", "page");
+});
+
+test("Budget invalid-date warning opens an authoritative correction flow and preserves its month", async ({
+  page,
+  request,
+}) => {
+  const month = "2034-05";
+  const accountIds: number[] = [];
+  for (const name of ["Q07 correction checking", "Q07 correction savings"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 0 },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [checkingId, savingsId] = accountIds;
+  const categoryResponse = await request.post("/api/categories", {
+    data: {
+      name: "Q07 correction category",
+      kind: "expense",
+      parent_id: null,
+      color: "#426b8a",
+      icon: "•",
+      sort_order: 100,
+    },
+  });
+  expect(categoryResponse.ok()).toBeTruthy();
+  const categoryId = (await categoryResponse.json()).id as number;
+  expect(
+    (
+      await request.put(`/api/category-budgets/${categoryId}?month=${month}`, {
+        data: { amount_minor: 100000 },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  const entryIds: number[] = [];
+  for (const [kind, amount, name, date] of [
+    ["expense", 1000, "Q07 valid expense", `${month}-10T12:00:00`],
+    ["expense", 5000, "Q07 impossible date", `${month}-15T12:00:00`],
+    ["expense", 2500, "Q07 invalid text", `${month}-16T12:00:00`],
+    ["income", 9999, "Q07 excluded income", `${month}-17T12:00:00`],
+  ] as const) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind,
+        account_id: checkingId,
+        amount_minor: amount,
+        name,
+        category_id: kind === "expense" ? categoryId : null,
+        occurred_at: date,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    entryIds.push((await response.json()).id as number);
+  }
+  const transferResponse = await request.post("/api/transfers", {
+    data: {
+      from_account_id: checkingId,
+      to_account_id: savingsId,
+      amount_minor: 777,
+      name: "Q07 excluded transfer",
+      occurred_at: `${month}-18T12:00:00`,
+    },
+  });
+  expect(transferResponse.ok()).toBeTruthy();
+  const transferId = (await transferResponse.json()).id as number;
+
+  // Seed legacy-invalid stored timestamps only in the disposable browser database.
+  const database = new DatabaseSync("/tmp/opencode/paisa-e2e.db");
+  const updateDate = database.prepare("UPDATE entries SET occurred_at = ? WHERE id = ?");
+  updateDate.run("2034-02-30T12:00:00", entryIds[1]);
+  updateDate.run("not-a-date", entryIds[2]);
+  database.close();
+
+  await page.goto("/");
+  await page.getByTestId("nav-budgets").click();
+  await page.getByTestId("budget-month").fill(month);
+  await expect(page.getByTestId("budget-total-spent")).toHaveText("₹10.00");
+  await expect(page.getByTestId("budget-expense-count")).toContainText("1 expenses");
+  await expect(page.getByTestId("budget-invalid-date-warning")).toContainText(
+    "2 expenses with invalid dates",
+  );
+  await expect(page.getByTestId("budget-invalid-date-warning")).toContainText("₹75.00");
+  await page.getByTestId("budget-correct-invalid-dates").click();
+
+  await expect(page.getByRole("heading", { name: "Invalid-date expenses" })).toBeVisible();
+  await expect(page.locator(".filter-panel")).toHaveCount(0);
+  await expect(page.getByTestId("download-csv")).toHaveCount(0);
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[1]}`)).toBeVisible();
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[2]}`)).toBeVisible();
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[0]}`)).toHaveCount(0);
+  await expect(page.getByTestId(`ledger-row-income-${entryIds[3]}`)).toHaveCount(0);
+  await expect(page.getByText("Q07 excluded transfer", { exact: true })).toHaveCount(0);
+
+  await openEntry(page, "expense", "Q07 impossible date");
+  await page.getByRole("dialog", { name: "Entry details" }).getByRole("button", { name: "Edit" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit entry" });
+  await editor.getByLabel("Date", { exact: true }).fill(`${month}-20`);
+  await editor.getByTestId("save-edit").click();
+  await expect(editor).toBeHidden();
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[1]}`)).toHaveCount(0);
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[2]}`)).toBeVisible();
+
+  await page.getByTestId("back-to-budget").click();
+  await expect(page.getByTestId("budget-month")).toHaveValue(month);
+  await expect(page.getByTestId("budget-total-spent")).toHaveText("₹60.00");
+  await expect(page.getByTestId("budget-expense-count")).toContainText("2 expenses");
+  await expect(page.getByTestId("budget-invalid-date-warning")).toContainText(
+    "1 expense with invalid dates",
+  );
+  await expect(page.getByTestId("budget-invalid-date-warning")).toContainText("₹25.00");
+
+  await page.getByTestId("nav-ledger").click();
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[1]}`)).toBeVisible();
+  await expect(page.getByTestId(`ledger-row-expense-${entryIds[2]}`)).toBeVisible();
+  const csv = await downloadLedgerCsv(page);
+  const corrected = csv.find((row) => row[2] === "Q07 impossible date");
+  expect(corrected?.[0]).toBe(`${month}-20`);
+  const invalid = csv.find((row) => row[2] === "Q07 invalid text");
+  expect(invalid?.[0]).toBe("");
+  expect(csv.filter((row) => row[2] === "Q07 excluded transfer")).toHaveLength(1);
+
+  await request.delete(`/api/transfers/${transferId}`);
+  for (const entryId of entryIds) await request.delete(`/api/transactions/${entryId}`);
+  await request.delete(`/api/categories/${categoryId}`);
 });

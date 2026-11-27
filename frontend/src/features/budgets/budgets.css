@@ -65,7 +65,13 @@
 }
 
 .budget-invalid-date-warning {
+  flex-wrap: wrap;
   margin-bottom: 20px;
+}
+
+.budget-invalid-date-warning .compact-button {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .budget-editor {

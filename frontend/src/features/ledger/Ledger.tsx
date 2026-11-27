@@ -24,6 +24,9 @@ interface LedgerProps {
   refresh: () => Promise<void>;
   onMessage: (message: string, error?: boolean) => void;
   historyAccountId: number | null;
+  invalidDateCorrection: boolean;
+  budgetMonth: string;
+  onExitInvalidDateCorrection: () => void;
   onClearHistory: () => void;
 }
 
@@ -41,6 +44,7 @@ interface DraftFilter {
 
 interface LedgerViewIdentity {
   historyAccountId: number | null;
+  invalidDateCorrection: boolean;
   filterKey: string;
   dataEntries: LedgerEntry[];
 }
@@ -101,6 +105,9 @@ export default function Ledger({
   refresh,
   onMessage,
   historyAccountId,
+  invalidDateCorrection,
+  budgetMonth,
+  onExitInvalidDateCorrection,
   onClearHistory,
 }: LedgerProps) {
   const [draft, setDraft] = useState<DraftFilter>(emptyDraft);
@@ -123,10 +130,11 @@ export default function Ledger({
   const viewIdentity = useMemo<LedgerViewIdentity>(
     () => ({
       historyAccountId,
+      invalidDateCorrection,
       filterKey: appliedFilterKey(applied),
       dataEntries: data.entries,
     }),
-    [applied, data.entries, historyAccountId],
+    [applied, data.entries, historyAccountId, invalidDateCorrection],
   );
   const activeViewIdentityRef = useRef<LedgerViewIdentity | null>(viewIdentity);
 
@@ -169,9 +177,11 @@ export default function Ledger({
         setStatusViewIdentity(requestViewIdentity);
       }
       try {
-        const result = historyAccountId
-          ? await api.accountHistory(historyAccountId, offset)
-          : await api.ledger(applied, offset);
+        const result = invalidDateCorrection
+          ? await api.invalidDateExpenses(offset)
+          : historyAccountId
+            ? await api.accountHistory(historyAccountId, offset)
+            : await api.ledger(applied, offset);
         if (!isCurrentRequest(request, requestViewIdentity)) return;
         setEntries((current) => {
           if (!isCurrentRequest(request, requestViewIdentity)) return current;
@@ -200,7 +210,7 @@ export default function Ledger({
         }
       }
     },
-    [applied, historyAccountId, isCurrentRequest, onMessage, viewIdentity],
+    [applied, historyAccountId, invalidDateCorrection, isCurrentRequest, onMessage, viewIdentity],
   );
 
   useEffect(() => {
@@ -234,7 +244,7 @@ export default function Ledger({
       { date: string; entries: LedgerEntry[]; income: number; expense: number; transfer: number }
     >();
     for (const entry of visibleEntries) {
-      const date = entry.occurred_at.slice(0, 10);
+      const date = invalidDateCorrection ? "Invalid date" : entry.occurred_at.slice(0, 10);
       const total = totalsByDate.get(date);
       const group = map.get(date) ?? {
         date,
@@ -247,7 +257,7 @@ export default function Ledger({
       map.set(date, group);
     }
     return [...map.values()].sort((left, right) => right.date.localeCompare(left.date));
-  }, [visibleEntries, visibleDailyTotals]);
+  }, [invalidDateCorrection, visibleEntries, visibleDailyTotals]);
 
   function applyFilters() {
     const min = draft.amount_min ? parseMinorUnits(draft.amount_min) : null;
@@ -386,11 +396,23 @@ export default function Ledger({
     <section className="ledger-section">
       <div className="panel-heading ledger-heading">
         <div>
-          <p className="section-kicker">{historyAccount ? "Account history" : "All activity"}</p>
-          <h2>{historyAccount ? historyAccount.name : "Ledger"}</h2>
+          <p className="section-kicker">
+            {invalidDateCorrection ? "Date correction" : historyAccount ? "Account history" : "All activity"}
+          </p>
+          <h2>{invalidDateCorrection ? "Invalid-date expenses" : historyAccount ? historyAccount.name : "Ledger"}</h2>
         </div>
         <div className="ledger-heading-actions">
-          {!historyAccount && (
+          {invalidDateCorrection && (
+            <button
+              className="secondary-button"
+              data-testid="back-to-budget"
+              type="button"
+              onClick={onExitInvalidDateCorrection}
+            >
+              Back to Budgets · {budgetMonth}
+            </button>
+          )}
+          {!historyAccount && !invalidDateCorrection && (
             <button
               className="secondary-button"
               data-testid="download-csv"
@@ -409,7 +431,7 @@ export default function Ledger({
         </div>
       </div>
 
-      {!historyAccount && (
+      {!historyAccount && !invalidDateCorrection && (
         <div className="filter-panel">
           <div className="filter-grid">
             <label className="filter-search">
@@ -588,22 +610,30 @@ export default function Ledger({
       )}
 
       {activeViewStatus === "loading" ? (
-        <div className="empty-state">Loading ledger…</div>
+        <div className="empty-state" data-testid="invalid-date-loading">
+          {invalidDateCorrection ? "Loading invalid-date expenses…" : "Loading ledger…"}
+        </div>
       ) : activeViewStatus === "error" ? (
-        <div className="empty-state">Could not load ledger.</div>
+        <div className="empty-state">
+          {invalidDateCorrection ? "Could not load invalid-date expenses." : "Could not load ledger."}
+        </div>
       ) : groups.length === 0 ? (
-        <div className="empty-state">No entries match this view.</div>
+        <div className="empty-state" data-testid="invalid-date-empty">
+          {invalidDateCorrection ? "No invalid-date expenses remain." : "No entries match this view."}
+        </div>
       ) : (
         <div className="ledger-groups">
           {groups.map((group) => (
             <article className="ledger-day" key={group.date}>
               <header className="ledger-day-header">
-                <h3>{group.date}</h3>
-                <div>
-                  <span>Income {formatMinor(group.income)}</span>
-                  <span>Expense {formatMinor(group.expense)}</span>
-                  {group.transfer > 0 && <span>Transfers {formatMinor(group.transfer)}</span>}
-                </div>
+                <h3>{invalidDateCorrection ? "Expenses with invalid stored dates" : group.date}</h3>
+                {!invalidDateCorrection && (
+                  <div>
+                    <span>Income {formatMinor(group.income)}</span>
+                    <span>Expense {formatMinor(group.expense)}</span>
+                    {group.transfer > 0 && <span>Transfers {formatMinor(group.transfer)}</span>}
+                  </div>
+                )}
               </header>
               <div className="ledger-rows">
                 {group.entries.map((entry) => {

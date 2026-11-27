@@ -157,6 +157,7 @@ All amounts are integer minor units.
 | `POST` | `/api/accounts` | Create an INR account with opening balance |
 | `GET` | `/api/accounts/:id/history` | Paginated account-specific ledger with canonical ledger filters, relevant transfer side, filtered count, and full-day totals |
 | `GET` | `/api/ledger` | Paginated filtered combined ledger with full-day totals; supports `limit` and `offset` |
+| `GET` | `/api/ledger/invalid-date-expenses` | Paginated expenses whose stored timestamps fail the shared date-validity rules |
 | `GET` | `/api/ledger/export` | UTF-8 CSV of every transaction matching the same filter query parameters; ignores `limit` and `offset` |
 | `GET` | `/api/reports/items-summary?month=YYYY-MM` | Selected-month income/expense totals and ranked exact-name item groups with counts |
 | `GET` | `/api/reports/daily-summary?anchor_date=YYYY-MM-DD` | Seven-day expense chart values and full-window 7/30-day average expenses |
@@ -175,6 +176,8 @@ All amounts are integer minor units.
 | `DELETE` | `/api/category-budgets/:category_id?month=YYYY-MM` | Remove a monthly category limit |
 | `GET/POST` | `/api/filters` | List/create named filters |
 | `PUT/DELETE` | `/api/filters/:id` | Update/delete named filter |
+
+The invalid-date correction endpoint uses the same all-month expense semantics as the Budgets warning. It excludes valid dates, income, and transfers, returns authoritative rows/counts/pagination, and intentionally has no daily totals because the dates are unknown.
 
 Account history accepts the same filter query parameters as `/api/ledger`. The path account is always pinned: `account_id` may be omitted or match the path ID; a conflicting value returns HTTP 400. Transfers still show only the side affecting that account.
 

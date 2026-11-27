@@ -230,6 +230,44 @@ impl Store {
         )
     }
 
+    pub async fn invalid_date_expenses(
+        &self,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> AppResult<LedgerPage> {
+        let mut entries = sqlx::query_as::<_, LedgerEntry>(
+            "SELECT e.id, e.kind, e.name, e.note, e.account_id, a.name AS account_name,
+                    NULL AS counterpart_account_id, NULL AS counterpart_account_name,
+                    e.amount_minor, e.occurred_at, e.category_id, c.name AS category_name,
+                    p.name AS category_parent_name, e.reconciled, e.transfer_id
+             FROM entries e
+             JOIN accounts a ON a.id = e.account_id
+             LEFT JOIN categories c ON c.id = e.category_id
+             LEFT JOIN categories p ON p.id = c.parent_id
+             WHERE e.kind = 'expense'
+             ORDER BY e.occurred_at DESC, e.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        entries.retain(|entry| date_only(&entry.occurred_at).is_none());
+        Self::order_entries(&mut entries);
+        let total_count = entries.len();
+        let limit = limit.unwrap_or(200).clamp(1, 200);
+        let offset = offset.unwrap_or(0);
+        let end = offset.saturating_add(limit).min(total_count);
+        let paged = if offset < total_count {
+            entries[offset..end].to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(LedgerPage {
+            entries: paged,
+            daily_totals: Vec::new(),
+            total_count,
+            next_offset: (end < total_count).then_some(end),
+        })
+    }
+
     pub async fn account_history(
         &self,
         account_id: i64,

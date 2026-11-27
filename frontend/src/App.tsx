@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./shared/api";
+import { localDateValue } from "./shared/date";
 import type { BudgetState } from "./shared/types";
 import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
@@ -25,6 +26,8 @@ export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [historyAccountId, setHistoryAccountId] = useState<number | null>(null);
+  const [budgetMonth, setBudgetMonth] = useState(() => localDateValue().slice(0, 7));
+  const [invalidDateCorrection, setInvalidDateCorrection] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -91,7 +94,10 @@ export default function App() {
           className={activeTab === "ledger" ? "active" : ""}
           aria-current={activeTab === "ledger" ? "page" : undefined}
           type="button"
-          onClick={() => setActiveTab("ledger")}
+          onClick={() => {
+            setInvalidDateCorrection(false);
+            setActiveTab("ledger");
+          }}
         >
           Ledger
         </button>
@@ -167,6 +173,12 @@ export default function App() {
               refresh={refresh}
               onMessage={onMessage}
               historyAccountId={historyAccountId}
+              invalidDateCorrection={invalidDateCorrection}
+              budgetMonth={budgetMonth}
+              onExitInvalidDateCorrection={() => {
+                setInvalidDateCorrection(false);
+                setActiveTab("budgets");
+              }}
               onClearHistory={() => setHistoryAccountId(null)}
             />
           </section>
@@ -180,7 +192,16 @@ export default function App() {
 
         {activeTab === "budgets" && (
           <section className="panel ledger-panel">
-            <Budgets onMessage={onMessage} />
+            <Budgets
+              month={budgetMonth}
+              onMonthChange={setBudgetMonth}
+              onCorrectInvalidDates={() => {
+                setHistoryAccountId(null);
+                setInvalidDateCorrection(true);
+                setActiveTab("ledger");
+              }}
+              onMessage={onMessage}
+            />
           </section>
         )}
 

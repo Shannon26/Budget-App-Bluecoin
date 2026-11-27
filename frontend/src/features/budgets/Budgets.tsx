@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../shared/api";
-import { localDateValue } from "../../shared/date";
 import { formatMinor, parseMinorUnits } from "../../shared/money";
 import type { CategoryBudget, MonthlyCategoryBudgets } from "../../shared/types";
 
@@ -40,8 +39,19 @@ function progressPercent(category: CategoryBudget): number {
   return Math.round((category.spent_minor / category.limit_minor) * 100);
 }
 
-export default function Budgets({ onMessage }: { onMessage: (message: string, error?: boolean) => void }) {
-  const [month, setMonth] = useState(() => localDateValue().slice(0, 7));
+interface BudgetsProps {
+  month: string;
+  onMonthChange: (month: string) => void;
+  onCorrectInvalidDates: () => void;
+  onMessage: (message: string, error?: boolean) => void;
+}
+
+export default function Budgets({
+  month,
+  onMonthChange,
+  onCorrectInvalidDates,
+  onMessage,
+}: BudgetsProps) {
   const [result, setResult] = useState<MonthlyCategoryBudgets | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingMonth, setSavingMonth] = useState<string | null>(null);
@@ -75,7 +85,7 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
     setResult(null);
     setLoading(true);
     setEditor(null);
-    setMonth(nextMonth);
+    onMonthChange(nextMonth);
   }
 
   const loaded = result?.month === month && !loading;
@@ -225,7 +235,15 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
           {visibleResult.invalid_date_expense_count} expense
           {visibleResult.invalid_date_expense_count === 1 ? "" : "s"} with invalid dates (
           {formatMinor(visibleResult.invalid_date_spent_minor)}) cannot be assigned to a month
-          and are excluded from monthly totals. Correct their dates in Ledger.
+          and are excluded from monthly totals.
+          <button
+            className="secondary-button compact-button"
+            data-testid="budget-correct-invalid-dates"
+            type="button"
+            onClick={onCorrectInvalidDates}
+          >
+            Review invalid-date expenses
+          </button>
         </div>
       )}
 

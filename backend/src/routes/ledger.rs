@@ -22,6 +22,18 @@ pub(crate) async fn ledger(
     ))
 }
 
+pub(crate) async fn invalid_date_expenses(
+    State(state): State<AppState>,
+    Query(page): Query<LedgerPaginationQuery>,
+) -> AppResult<Json<LedgerPage>> {
+    Ok(Json(
+        state
+            .store
+            .invalid_date_expenses(page.limit, page.offset)
+            .await?,
+    ))
+}
+
 pub(crate) async fn export_ledger(
     State(state): State<AppState>,
     Query(page): Query<LedgerPageQuery>,

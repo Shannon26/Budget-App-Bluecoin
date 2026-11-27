@@ -39,6 +39,15 @@ pub struct LedgerPage {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct LedgerPaginationQuery {
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct LedgerPageQuery {
     #[serde(default)]
     pub search: Option<String>,

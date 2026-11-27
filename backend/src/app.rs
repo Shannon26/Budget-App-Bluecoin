@@ -75,6 +75,10 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             axum::routing::patch(routes::transfers::reconcile_transfer),
         )
         .route("/api/ledger", get(routes::ledger::ledger))
+        .route(
+            "/api/ledger/invalid-date-expenses",
+            get(routes::ledger::invalid_date_expenses),
+        )
         .route("/api/ledger/export", get(routes::ledger::export_ledger))
         .route(
             "/api/reports/net-earnings",

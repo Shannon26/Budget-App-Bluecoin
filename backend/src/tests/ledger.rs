@@ -403,6 +403,98 @@ async fn account_history_filtered_pagination_keeps_full_day_totals_and_stable_or
 }
 
 #[tokio::test]
+async fn invalid_date_expense_correction_page_matches_budget_semantics_and_paginates() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Invalid correction checking", 0).await;
+    let savings = create_account(&app, "Invalid correction savings", 0).await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        100,
+        "Q07 valid expense",
+        None,
+        "2026-11-10",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        checking,
+        999,
+        "Q07 valid income",
+        None,
+        "2026-11-10",
+    )
+    .await;
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": checking,
+            "to_account_id": savings,
+            "amount_minor": 777,
+            "name": "Q07 excluded transfer",
+            "occurred_at": "2026-11-10T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    sqlx::query(
+        "WITH RECURSIVE numbers(value) AS (
+             SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 201
+         )
+         INSERT INTO entries
+             (kind, account_id, amount_minor, name, category_id, reconciled, note, occurred_at, created_at, transfer_id)
+         SELECT 'expense', ?, 100, 'Q07 invalid ' || value, NULL, 0, '',
+                'not-a-date', '2026-11-01T00:00:00Z', NULL
+         FROM numbers",
+    )
+    .bind(checking)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, first) = send_json(
+        &app,
+        "GET",
+        "/api/ledger/invalid-date-expenses?limit=200&offset=0",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["total_count"], 201);
+    assert_eq!(first["entries"].as_array().unwrap().len(), 200);
+    assert_eq!(first["next_offset"], 200);
+    assert_eq!(first["daily_totals"], json!([]));
+    assert!(first["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["kind"] == "expense" && entry["occurred_at"] == "not-a-date"));
+    let (status, second) = send_json(
+        &app,
+        "GET",
+        "/api/ledger/invalid-date-expenses?limit=200&offset=200",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(second["next_offset"], Value::Null);
+    assert!(!first.to_string().contains("Q07 valid expense"));
+    assert!(!first.to_string().contains("Q07 valid income"));
+    assert!(!first.to_string().contains("Q07 excluded transfer"));
+
+    let budgets = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(budgets["invalid_date_expense_count"], 201);
+    assert_eq!(budgets["invalid_date_spent_minor"], 20_100);
+    assert_eq!(budgets["total_spent_minor"], 100);
+    assert_eq!(budgets["expense_count"], 1);
+}
+
+#[tokio::test]
 async fn ledger_date_filters_validate_ranges_and_include_both_boundary_days() {
     let (app, pool, _directory) = setup().await;
     let checking = create_account(&app, "Date boundary checking", 100_000).await;

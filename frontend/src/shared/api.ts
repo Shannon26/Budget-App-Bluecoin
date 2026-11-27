@@ -98,6 +98,8 @@ export const api = {
     }),
   accountHistory: (accountId: number, offset = 0) =>
     request<LedgerPage>(`/accounts/${accountId}/history?limit=200&offset=${offset}`),
+  invalidDateExpenses: (offset = 0) =>
+    request<LedgerPage>(`/ledger/invalid-date-expenses?limit=200&offset=${offset}`),
   createTransaction: (input: {
     kind: TransactionKind;
     account_id: number;
