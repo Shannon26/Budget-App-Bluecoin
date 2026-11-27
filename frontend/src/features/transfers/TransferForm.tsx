@@ -31,7 +31,7 @@ export default function TransferForm({
             placeholder="e.g. Move to savings"
           />
         </label>
-        <div className="form-row">
+        <div className="form-row transfer-account-row">
           <label>
             From
             <select
@@ -51,6 +51,15 @@ export default function TransferForm({
               ))}
             </select>
           </label>
+          <button
+            className="secondary-button"
+            data-testid="swap-transfer-accounts"
+            type="button"
+            onClick={forms.swapTransferAccounts}
+            disabled={!forms.canSwapTransferAccounts}
+          >
+            <span aria-hidden="true">⇄</span> Swap accounts
+          </button>
           <label>
             To
             <select

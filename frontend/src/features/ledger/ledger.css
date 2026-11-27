@@ -229,6 +229,27 @@
   background: #ecefe8;
 }
 
+.transfer-account-row {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+}
+
+.transfer-account-row .secondary-button {
+  width: auto;
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+@media (max-width: 430px) {
+  .transfer-account-row {
+    grid-template-columns: 1fr;
+  }
+
+  .transfer-account-row .secondary-button {
+    width: 100%;
+  }
+}
+
 .modal-backdrop {
   position: fixed;
   z-index: 50;
