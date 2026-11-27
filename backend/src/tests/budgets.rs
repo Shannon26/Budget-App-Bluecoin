@@ -1,5 +1,29 @@
 use super::*;
 
+async fn set_overall_budget(app: &Router, month: &str, amount_minor: i64) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "PUT",
+        &format!("/api/overall-budget?month={month}"),
+        json!({ "amount_minor": amount_minor }),
+    )
+    .await
+}
+
+async fn remove_overall_budget(app: &Router, month: &str) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "DELETE",
+        &format!("/api/overall-budget?month={month}"),
+        json!({}),
+    )
+    .await
+}
+
+fn overall_budget(body: &Value) -> &Value {
+    &body["overall_budget"]
+}
+
 #[tokio::test]
 async fn category_budget_limits_enforce_parent_child_and_category_move_rules() {
     let (app, _pool, _directory) = setup().await;
@@ -672,6 +696,276 @@ async fn monthly_category_budgets_roll_up_children_without_double_counting_overa
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(budget_row(&body, dining)["limit_minor"], Value::Null);
     assert_eq!(budget_row(&body, dining)["spent_minor"], 180_000);
+}
+
+#[tokio::test]
+async fn overall_budget_uses_raw_monthly_expenses_and_stays_independent_of_category_limits() {
+    let (app, _pool, _directory) = setup().await;
+    let checking = create_account(&app, "Overall budget checking", 1_000_000).await;
+    let savings = create_account(&app, "Overall budget savings", 0).await;
+    let report_hidden = create_account(&app, "Overall budget report hidden", 0).await;
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{report_hidden}"),
+        json!({ "hide_from_reports": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let food = category_id(&app, "expense", "Food & Drink").await;
+    let groceries = category_id(&app, "expense", "Groceries").await;
+    let dining = category_id(&app, "expense", "Dining Out").await;
+    let (status, body) = update_category_shape(&app, dining, None, Some(Some(food))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, food, "2026-11", 500_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_budget(&app, dining, "2026-11", 150_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_overall_budget(&app, "2026-11", 250_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(overall_budget(&body)["spent_minor"], 0);
+    assert_eq!(overall_budget(&body)["remaining_minor"], 250_000);
+
+    let groceries_entry = create_entry_at(
+        &app,
+        "expense",
+        checking,
+        100_000,
+        "Overall groceries",
+        Some(groceries),
+        "2026-11-05T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        180_000,
+        "Overall dining",
+        Some(dining),
+        "2026-11-06T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        30_000,
+        "Overall uncategorized",
+        None,
+        "2026-11-07T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        report_hidden,
+        5_000,
+        "Overall report-hidden expense",
+        Some(groceries),
+        "2026-11-08T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        checking,
+        500_000,
+        "Overall income excluded",
+        None,
+        "2026-11-09T12:00:00",
+    )
+    .await;
+    let (status, body) = transfer(&app, checking, savings, 100_000).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/categories/{dining}"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], true);
+
+    let november = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(november["total_spent_minor"], 315_000);
+    assert_eq!(november["uncategorized_spent_minor"], 30_000);
+    assert_eq!(november["expense_count"], 4);
+    assert_eq!(overall_budget(&november)["limit_minor"], 250_000);
+    assert_eq!(overall_budget(&november)["spent_minor"], 315_000);
+    assert_eq!(overall_budget(&november)["remaining_minor"], -65_000);
+    assert_eq!(budget_row(&november, food)["spent_minor"], 285_000);
+    assert!(budget_row(&november, dining)["archived_at"].is_string());
+    assert_eq!(budget_row(&november, dining)["spent_minor"], 180_000);
+    assert_eq!(budget_row(&november, dining)["limit_minor"], 150_000);
+
+    let (status, body) = set_overall_budget(&app, "2026-11", 400_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(overall_budget(&body)["remaining_minor"], 85_000);
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/transactions/{groceries_entry}"),
+        json!({
+            "kind": "expense",
+            "account_id": checking,
+            "amount_minor": 120_000,
+            "name": "Overall groceries edited",
+            "category_id": groceries,
+            "occurred_at": "2026-11-05T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let edited = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(overall_budget(&edited)["spent_minor"], 335_000);
+    assert_eq!(overall_budget(&edited)["remaining_minor"], 65_000);
+
+    let (status, body) = remove_overall_budget(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(overall_budget(&body)["limit_minor"], Value::Null);
+    assert_eq!(overall_budget(&body)["remaining_minor"], Value::Null);
+    assert_eq!(budget_row(&body, food)["limit_minor"], 500_000);
+    assert_eq!(budget_row(&body, dining)["limit_minor"], 150_000);
+
+    let (status, body) = set_overall_budget(&app, "2026-12", 150_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(overall_budget(&body)["spent_minor"], 0);
+    assert_eq!(overall_budget(&body)["remaining_minor"], 150_000);
+    assert_eq!(
+        overall_budget(&monthly_budgets(&app, "2026-11").await)["limit_minor"],
+        Value::Null
+    );
+}
+
+#[tokio::test]
+async fn overall_budget_validates_inputs_and_rolls_back_overflowing_summary_mutations() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Overall budget validation", 0).await;
+    for month in ["2026-13", "2026-00", "2026-1", "=2026-11", "+2026-11"] {
+        let (status, body) = send_json(
+            &app,
+            "GET",
+            &format!("/api/category-budgets?month={month}"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let (status, body) = set_overall_budget(&app, month, 100_000).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{month}: {body}");
+        let (status, body) = remove_overall_budget(&app, month).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{month}: {body}");
+    }
+    for amount in [0, -1] {
+        let (status, body) = set_overall_budget(&app, "2026-11", amount).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "amount must be greater than zero");
+    }
+    let cap_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM overall_budgets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cap_count, 0);
+
+    let (status, body) = set_overall_budget(&app, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let original = sqlx::query_as::<_, (i64, String)>(
+        "SELECT amount_minor, updated_at FROM overall_budgets WHERE month = '2026-11'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for (name, amount) in [
+        ("Overall overflow maximum", i64::MAX),
+        ("Overall overflow extra", 1),
+    ] {
+        create_entry_at(
+            &app,
+            "expense",
+            checking,
+            amount,
+            name,
+            None,
+            "2026-11-20T12:00:00",
+        )
+        .await;
+    }
+
+    let (status, body) = set_overall_budget(&app, "2026-11", 200_000).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"],
+        "monthly expense total is outside the supported integer range"
+    );
+    let after_save = sqlx::query_as::<_, (i64, String)>(
+        "SELECT amount_minor, updated_at FROM overall_budgets WHERE month = '2026-11'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_save, original);
+
+    let (status, body) = remove_overall_budget(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"],
+        "monthly expense total is outside the supported integer range"
+    );
+    let after_remove = sqlx::query_as::<_, (i64, String)>(
+        "SELECT amount_minor, updated_at FROM overall_budgets WHERE month = '2026-11'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_remove, original);
+
+    let (status, body) = set_overall_budget(&app, "2030-01", i64::MAX).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(overall_budget(&body)["limit_minor"], i64::MAX);
+    assert_eq!(overall_budget(&body)["remaining_minor"], i64::MAX);
+}
+
+#[tokio::test]
+async fn overall_budget_migration_preserves_legacy_budgets_and_entries_without_seeding_a_cap() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Pre overall budget checking", 0).await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+    let (status, body) = set_budget(&app, shopping, "2026-11", 50_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    create_entry_at(
+        &app,
+        "expense",
+        checking,
+        12_345,
+        "Pre overall budget expense",
+        Some(shopping),
+        "2026-11-10T12:00:00",
+    )
+    .await;
+
+    sqlx::query("DROP TABLE overall_budgets")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../../migrations/009_overall_budget.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = build_router(pool.clone());
+
+    let migrated = monthly_budgets(&app, "2026-11").await;
+    assert_eq!(migrated["total_spent_minor"], 12_345);
+    assert_eq!(overall_budget(&migrated)["limit_minor"], Value::Null);
+    assert_eq!(overall_budget(&migrated)["remaining_minor"], Value::Null);
+    assert_eq!(budget_row(&migrated, shopping)["limit_minor"], 50_000);
+    assert_eq!(budget_row(&migrated, shopping)["spent_minor"], 12_345);
+
+    let (status, body) = set_overall_budget(&app, "2026-11", 20_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(overall_budget(&body)["limit_minor"], 20_000);
+    assert_eq!(overall_budget(&body)["remaining_minor"], 7_655);
+    assert_eq!(state(&app).await["totals"]["expense_minor"], 12_345);
 }
 
 #[tokio::test]

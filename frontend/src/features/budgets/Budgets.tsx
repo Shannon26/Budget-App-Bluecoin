@@ -56,6 +56,7 @@ export default function Budgets({
   const [loading, setLoading] = useState(true);
   const [savingMonth, setSavingMonth] = useState<string | null>(null);
   const [editor, setEditor] = useState<{ category: CategoryBudget; amount: string } | null>(null);
+  const [overallEditor, setOverallEditor] = useState<string | null>(null);
   const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
@@ -76,6 +77,7 @@ export default function Budgets({
 
   useEffect(() => {
     setEditor(null);
+    setOverallEditor(null);
     void load();
   }, [load]);
 
@@ -85,12 +87,20 @@ export default function Budgets({
     setResult(null);
     setLoading(true);
     setEditor(null);
+    setOverallEditor(null);
     onMonthChange(nextMonth);
   }
 
   const loaded = result?.month === month && !loading;
   const visibleResult = result?.month === month ? result : null;
   const savingThisMonth = savingMonth === month;
+  const overall = visibleResult?.overall_budget ?? null;
+  const hasOverallLimit = overall?.limit_minor !== null && overall?.limit_minor !== undefined;
+  const overallOver = hasOverallLimit && overall!.spent_minor > overall!.limit_minor!;
+  const overallRemaining = overall?.remaining_minor ?? 0;
+  const overallPercent = hasOverallLimit
+    ? Math.round((overall!.spent_minor / overall!.limit_minor!) * 100)
+    : 0;
 
   const parentIds = useMemo(
     () =>
@@ -103,10 +113,20 @@ export default function Budgets({
   );
 
   function openEditor(category: CategoryBudget) {
+    setOverallEditor(null);
     setEditor({
       category,
       amount: category.limit_minor === null ? "" : (category.limit_minor / 100).toFixed(2),
     });
+  }
+
+  function openOverallEditor() {
+    setEditor(null);
+    setOverallEditor(
+      overall?.limit_minor === null || overall?.limit_minor === undefined
+        ? ""
+        : (overall.limit_minor / 100).toFixed(2),
+    );
   }
 
   async function saveLimit(event: FormEvent<HTMLFormElement>) {
@@ -152,6 +172,53 @@ export default function Budgets({
     } catch (reason) {
       if (request === requestSequence.current) {
         onMessage(reason instanceof Error ? reason.message : "Could not remove budget", true);
+      }
+    } finally {
+      setSavingMonth((current) => (current === requestMonth ? null : current));
+    }
+  }
+
+  async function saveOverallLimit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (overallEditor === null) return;
+    const amountMinor = parseMinorUnits(overallEditor);
+    if (amountMinor === null || amountMinor <= 0) {
+      onMessage("Enter a valid overall monthly cap greater than zero", true);
+      return;
+    }
+    const requestMonth = month;
+    const request = requestSequence.current;
+    setSavingMonth(requestMonth);
+    try {
+      const next = await api.setOverallBudget(requestMonth, amountMinor);
+      if (request !== requestSequence.current || next.month !== requestMonth) return;
+      setResult(next);
+      setEditor(null);
+      setOverallEditor(null);
+      onMessage("Overall monthly budget saved.");
+    } catch (reason) {
+      if (request === requestSequence.current) {
+        onMessage(reason instanceof Error ? reason.message : "Could not save overall budget", true);
+      }
+    } finally {
+      setSavingMonth((current) => (current === requestMonth ? null : current));
+    }
+  }
+
+  async function removeOverallLimit() {
+    const requestMonth = month;
+    const request = requestSequence.current;
+    setSavingMonth(requestMonth);
+    try {
+      const next = await api.removeOverallBudget(requestMonth);
+      if (request !== requestSequence.current || next.month !== requestMonth) return;
+      setResult(next);
+      setEditor(null);
+      setOverallEditor(null);
+      onMessage("Overall monthly budget removed.");
+    } catch (reason) {
+      if (request === requestSequence.current) {
+        onMessage(reason instanceof Error ? reason.message : "Could not remove overall budget", true);
       }
     } finally {
       setSavingMonth((current) => (current === requestMonth ? null : current));
@@ -225,6 +292,102 @@ export default function Budgets({
         </article>
       </div>
 
+      <section
+        className={`budget-summary-card overall-budget-card ${overallOver ? "over" : ""}`}
+        data-testid="overall-budget"
+      >
+        <div className="overall-budget-heading">
+          <div>
+            <p>Overall monthly cap</p>
+            <strong>{monthLabel(month)}</strong>
+          </div>
+          <div className="overall-budget-actions">
+            <button
+              className="secondary-button compact-button"
+              data-testid={hasOverallLimit ? "edit-overall-budget" : "set-overall-budget"}
+              type="button"
+              disabled={savingThisMonth || !loaded}
+              onClick={openOverallEditor}
+            >
+              {hasOverallLimit ? "Edit cap" : "Set cap"}
+            </button>
+            {hasOverallLimit && (
+              <button
+                className="text-button danger-text"
+                data-testid="remove-overall-budget"
+                type="button"
+                disabled={savingThisMonth || !loaded}
+                onClick={() => void removeOverallLimit()}
+              >
+                Remove cap
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="overall-budget-values">
+          <div>
+            <span>Spent</span>
+            <strong data-testid="overall-budget-spent">
+              {loading
+                ? "Pending…"
+                : visibleResult && overall
+                  ? formatMinor(overall.spent_minor)
+                  : "Unavailable"}
+            </strong>
+          </div>
+          <div>
+            <span>Cap</span>
+            <strong data-testid="overall-budget-limit">
+              {loading
+                ? "Pending…"
+                : !visibleResult
+                  ? "Unavailable"
+                  : hasOverallLimit
+                    ? formatMinor(overall!.limit_minor!)
+                    : "No cap"}
+            </strong>
+          </div>
+          <div>
+            <span>{overallOver ? "Over" : "Remaining"}</span>
+            <strong
+              className={overallOver ? "negative-text" : "positive-text"}
+              data-testid="overall-budget-remaining"
+            >
+              {loading
+                ? "Pending…"
+                : !visibleResult
+                  ? "Unavailable"
+                  : !hasOverallLimit
+                    ? "—"
+                    : overallOver
+                      ? `${formatMinor(-overallRemaining)} over`
+                      : `${formatMinor(overallRemaining)} left`}
+            </strong>
+          </div>
+        </div>
+        {hasOverallLimit && visibleResult && !loading && (
+          <div className="budget-progress-block">
+            <div
+              className={`budget-progress ${overallOver ? "over" : ""}`}
+              data-testid="overall-budget-progress"
+              role="progressbar"
+              aria-label="Overall monthly budget used"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.min(overallPercent, 100)}
+              aria-valuetext={`${overallPercent}% of cap used`}
+            >
+              <span style={{ width: `${Math.min(overallPercent, 100)}%` }} />
+            </div>
+            <small>{overallPercent}% used</small>
+          </div>
+        )}
+        <p className="overall-budget-note">
+          Counts every posted expense once, including uncategorized and archived categories.
+          Category limits remain independent.
+        </p>
+      </section>
+
       {visibleResult && visibleResult.invalid_date_expense_count > 0 && (
         <div
           className="message message-error budget-invalid-date-warning"
@@ -245,6 +408,49 @@ export default function Budgets({
             Review invalid-date expenses
           </button>
         </div>
+      )}
+
+      {overallEditor !== null && (
+        <form
+          className="budget-editor overall-budget-editor"
+          data-testid="overall-budget-editor"
+          onSubmit={saveOverallLimit}
+        >
+          <div>
+            <p className="section-kicker">{monthLabel(month)}</p>
+            <h3>{hasOverallLimit ? "Edit" : "Set"} overall monthly cap</h3>
+            <p>Applies to all posted expenses for this month.</p>
+          </div>
+          <label>
+            Cap in INR
+            <input
+              data-testid="overall-budget-amount"
+              value={overallEditor}
+              onChange={(event) => setOverallEditor(event.target.value)}
+              inputMode="decimal"
+              placeholder="5000.00"
+              autoFocus
+              required
+            />
+          </label>
+          <button
+            className="primary-button compact-button"
+            data-testid="save-overall-budget"
+            type="submit"
+            disabled={savingThisMonth || !loaded}
+          >
+            {savingThisMonth ? "Saving…" : "Save cap"}
+          </button>
+          <button
+            className="secondary-button"
+            data-testid="cancel-overall-budget"
+            type="button"
+            disabled={savingThisMonth || !loaded}
+            onClick={() => setOverallEditor(null)}
+          >
+            Cancel
+          </button>
+        </form>
       )}
 
       {editor && (

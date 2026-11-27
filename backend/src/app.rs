@@ -111,6 +111,11 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
                 .delete(routes::categories::delete_category),
         )
         .route(
+            "/api/overall-budget",
+            axum::routing::put(routes::budgets::set_overall_budget)
+                .delete(routes::budgets::remove_overall_budget),
+        )
+        .route(
             "/api/category-budgets",
             get(routes::budgets::list_category_budgets),
         )

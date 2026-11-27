@@ -156,6 +156,12 @@ impl Store {
         .await?
         .into_iter()
         .collect::<HashMap<_, _>>();
+        let overall_limit = sqlx::query_scalar::<_, i64>(
+            "SELECT amount_minor FROM overall_budgets WHERE month = ?",
+        )
+        .bind(month)
+        .fetch_optional(&mut *connection)
+        .await?;
 
         let categories = ordered_ids
             .into_iter()
@@ -187,9 +193,18 @@ impl Store {
             })
             .collect::<AppResult<Vec<_>>>()?;
 
+        let total_spent_minor = Store::checked_i64(total_spent_minor, "monthly expense total")?;
+        let overall_remaining_minor = overall_limit
+            .map(|limit| {
+                Store::checked_i64(
+                    i128::from(limit) - i128::from(total_spent_minor),
+                    "overall budget remaining",
+                )
+            })
+            .transpose()?;
         Ok(MonthlyCategoryBudgets {
             month: month.to_string(),
-            total_spent_minor: Store::checked_i64(total_spent_minor, "monthly expense total")?,
+            total_spent_minor,
             uncategorized_spent_minor: Store::checked_i64(
                 uncategorized_spent_minor,
                 "uncategorized monthly expense total",
@@ -200,6 +215,11 @@ impl Store {
                 invalid_date_spent_minor,
                 "invalid-date expense total",
             )?,
+            overall_budget: OverallBudgetSummary {
+                limit_minor: overall_limit,
+                spent_minor: total_spent_minor,
+                remaining_minor: overall_remaining_minor,
+            },
             categories,
         })
     }
@@ -222,6 +242,51 @@ impl Store {
             }
         }
         total
+    }
+
+    pub async fn set_overall_budget(
+        &self,
+        month: &str,
+        amount_minor: i64,
+    ) -> AppResult<MonthlyCategoryBudgets> {
+        Self::validate_budget_month(month)?;
+        Self::validate_amount(amount_minor)?;
+        // Keep the upsert and checked summary in one immediate write transaction,
+        // matching category-budget mutation and rollback semantics.
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO overall_budgets (month, amount_minor, created_at, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(month) DO UPDATE SET
+                 amount_minor = excluded.amount_minor,
+                 updated_at = excluded.updated_at",
+        )
+        .bind(month)
+        .bind(amount_minor)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        let snapshot = self
+            .monthly_category_budgets_on(&mut transaction, month)
+            .await?;
+        transaction.commit().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn remove_overall_budget(&self, month: &str) -> AppResult<MonthlyCategoryBudgets> {
+        Self::validate_budget_month(month)?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("DELETE FROM overall_budgets WHERE month = ?")
+            .bind(month)
+            .execute(&mut *transaction)
+            .await?;
+        let snapshot = self
+            .monthly_category_budgets_on(&mut transaction, month)
+            .await?;
+        transaction.commit().await?;
+        Ok(snapshot)
     }
 
     pub async fn set_category_budget(

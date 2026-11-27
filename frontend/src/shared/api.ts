@@ -230,6 +230,15 @@ export const api = {
     request<{ archived: boolean }>(`/categories/${id}`, { method: "DELETE" }),
   categoryBudgets: (month: string) =>
     request<MonthlyCategoryBudgets>(`/category-budgets?month=${encodeURIComponent(month)}`),
+  setOverallBudget: (month: string, amountMinor: number) =>
+    request<MonthlyCategoryBudgets>(`/overall-budget?month=${encodeURIComponent(month)}`, {
+      method: "PUT",
+      body: JSON.stringify({ amount_minor: amountMinor }),
+    }),
+  removeOverallBudget: (month: string) =>
+    request<MonthlyCategoryBudgets>(`/overall-budget?month=${encodeURIComponent(month)}`, {
+      method: "DELETE",
+    }),
   setCategoryBudget: (categoryId: number, month: string, amountMinor: number) =>
     request<MonthlyCategoryBudgets>(
       `/category-budgets/${categoryId}?month=${encodeURIComponent(month)}`,
