@@ -2,8 +2,9 @@ use super::Store;
 use crate::date::{date_only, is_valid_calendar_date, month_bounds, previous_month};
 use crate::error::{AppError, AppResult};
 use crate::models::*;
+use chrono::{NaiveDate, TimeDelta};
 use sqlx::FromRow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, FromRow)]
 pub(super) struct ReportEntry {
@@ -81,6 +82,13 @@ impl PeriodAmount {
 fn checked_i64(value: i128, label: &str) -> AppResult<i64> {
     i64::try_from(value)
         .map_err(|_| AppError::Conflict(format!("{label} is outside the supported integer range")))
+}
+
+fn rounded_average(total_minor: i128, days: i128, label: &str) -> AppResult<i64> {
+    let rounded = total_minor.checked_add(days / 2).ok_or_else(|| {
+        AppError::Conflict(format!("{label} is outside the supported integer range"))
+    })? / days;
+    checked_i64(rounded, label)
 }
 
 #[derive(Debug, Default)]
@@ -451,6 +459,102 @@ impl Store {
             },
             income_items,
             expense_items,
+            invalid_date_entry_count: checked_i64(
+                invalid_date_entry_count,
+                "invalid-date entry count",
+            )?,
+        })
+    }
+
+    pub async fn daily_summary_report(&self, anchor_date: &str) -> AppResult<DailySummaryReport> {
+        if !is_valid_calendar_date(anchor_date) {
+            return Err(AppError::BadRequest(
+                "anchor_date must be a valid calendar date in YYYY-MM-DD format".to_string(),
+            ));
+        }
+        let anchor = NaiveDate::parse_from_str(anchor_date, "%Y-%m-%d").map_err(|_| {
+            AppError::BadRequest("anchor_date must be a valid calendar date".to_string())
+        })?;
+        let start_30 = anchor
+            .checked_sub_signed(TimeDelta::days(29))
+            .ok_or_else(|| {
+                AppError::BadRequest("anchor_date must allow a complete 30-day window".to_string())
+            })?;
+        let start_7_date = anchor
+            .checked_sub_signed(TimeDelta::days(6))
+            .ok_or_else(|| {
+                AppError::BadRequest(
+                    "anchor_date must allow a complete seven-day window".to_string(),
+                )
+            })?;
+        let earliest_date = NaiveDate::from_ymd_opt(0, 1, 1)
+            .ok_or_else(|| AppError::Conflict("calendar lower bound is unavailable".to_string()))?;
+        if start_30 < earliest_date {
+            return Err(AppError::BadRequest(
+                "anchor_date must allow a complete 30-day window".to_string(),
+            ));
+        }
+        let start_30 = start_30.to_string();
+        let start_7 = start_7_date.to_string();
+        let ReportSnapshot {
+            hidden_report_accounts,
+            entries,
+            ..
+        } = self.report_snapshot().await?;
+        let mut daily_expenses = BTreeMap::<String, i128>::new();
+        let mut total_7 = 0_i128;
+        let mut total_30 = 0_i128;
+        let mut invalid_date_entry_count = 0_i128;
+        for entry in entries {
+            if hidden_report_accounts.contains(&entry.account_id) {
+                continue;
+            }
+            let Some(date) = date_only(&entry.occurred_at) else {
+                invalid_date_entry_count += 1;
+                continue;
+            };
+            if entry.kind != "expense"
+                || date.as_str() < start_30.as_str()
+                || date.as_str() > anchor_date
+            {
+                continue;
+            }
+            let amount = i128::from(entry.amount_minor);
+            *daily_expenses.entry(date.clone()).or_default() += amount;
+            total_30 += amount;
+            if date.as_str() >= start_7.as_str() {
+                total_7 += amount;
+            }
+        }
+
+        let mut days = Vec::with_capacity(7);
+        let mut cursor = start_7_date;
+        loop {
+            let date = cursor.to_string();
+            days.push(DailySpending {
+                expense_minor: checked_i64(
+                    daily_expenses.get(&date).copied().unwrap_or_default(),
+                    "daily expense total",
+                )?,
+                date,
+            });
+            if cursor == anchor {
+                break;
+            }
+            cursor = cursor
+                .checked_add_signed(TimeDelta::days(1))
+                .ok_or_else(|| {
+                    AppError::Conflict("daily window could not be represented".to_string())
+                })?;
+        }
+
+        Ok(DailySummaryReport {
+            anchor_date: anchor_date.to_string(),
+            seven_day_start_date: start_7,
+            thirty_day_start_date: start_30,
+            average_7_minor: rounded_average(total_7, 7, "seven-day average expense")?,
+            average_30_minor: rounded_average(total_30, 30, "30-day average expense")?,
+            days,
             invalid_date_entry_count: checked_i64(
                 invalid_date_entry_count,
                 "invalid-date entry count",

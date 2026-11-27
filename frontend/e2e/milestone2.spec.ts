@@ -1875,3 +1875,174 @@ test("credit card metadata and signed latest balance follow purchases and paymen
   await expect(balance(page, "F03 Card")).toContainText("₹1.00");
   await expect(card.getByTestId(`account-balance-state-${cardId}`)).toContainText("Credit balance");
 });
+
+test("Daily Summary charts seven days and keeps averages and states scoped to its anchor", async ({
+  page,
+  request,
+}) => {
+  const anchor = "2032-03-07";
+  const entryIds: number[] = [];
+  let transferId: number | null = null;
+  try {
+    const accountIds: number[] = [];
+    for (const [name, opening] of [
+      ["F07 visible", 1000000],
+      ["F07 picker hidden", 0],
+      ["F07 report hidden", 0],
+    ] as const) {
+      const response = await request.post("/api/accounts", {
+        data: { name, currency: "INR", opening_balance_minor: opening },
+      });
+      expect(response.ok()).toBeTruthy();
+      accountIds.push((await response.json()).id as number);
+    }
+    const [visibleId, pickerId, reportHiddenId] = accountIds;
+    expect(
+      (
+        await request.put(`/api/accounts/${pickerId}`, {
+          data: { hide_from_selection: true },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await request.put(`/api/accounts/${reportHiddenId}`, {
+          data: { hide_from_reports: true },
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    const entries = [
+      [visibleId, "expense", 10000, "F07 first day", "2032-03-01T00:00:00"],
+      [visibleId, "expense", 20000, "F07 middle day", "2032-03-03T12:00:00"],
+      [visibleId, "expense", 30000, "F07 anchor expense", "2032-03-07T23:59:59+05:30"],
+      [pickerId, "expense", 5000, "F07 picker expense", "2032-03-07T12:00:00"],
+      [reportHiddenId, "expense", 999000, "F07 hidden expense", "2032-03-07T12:00:00"],
+      [visibleId, "income", 500000, "F07 excluded income", "2032-03-07T12:00:00"],
+      [visibleId, "expense", 15000, "F07 leap day", "2032-02-29T23:59:59Z"],
+      [visibleId, "expense", 99000, "F07 before 30 days", "2032-02-06T23:59:59Z"],
+      [visibleId, "expense", 99000, "F07 after anchor", "2032-03-08T00:00:00"],
+    ] as const;
+    for (const [accountId, kind, amount, name, occurredAt] of entries) {
+      const response = await request.post("/api/transactions", {
+        data: {
+          kind,
+          account_id: accountId,
+          amount_minor: amount,
+          name,
+          category_id: null,
+          occurred_at: occurredAt,
+        },
+      });
+      expect(response.ok()).toBeTruthy();
+      entryIds.push((await response.json()).id as number);
+    }
+    const transferResponse = await request.post("/api/transfers", {
+      data: {
+        from_account_id: visibleId,
+        to_account_id: pickerId,
+        amount_minor: 50000,
+        name: "F07 excluded transfer",
+        occurred_at: "2032-03-07T12:00:00",
+      },
+    });
+    expect(transferResponse.ok()).toBeTruthy();
+    transferId = (await transferResponse.json()).id as number;
+
+    const releaseAnchor = deferred();
+    const anchorStarted = deferred();
+    const anchorFinished = deferred();
+    await page.route("**/api/reports/daily-summary?**", async (route) => {
+      const date = new URL(route.request().url()).searchParams.get("anchor_date");
+      if (date === anchor) {
+        anchorStarted.resolve();
+        const response = await route.fetch();
+        await releaseAnchor.promise;
+        await route.fulfill({ response });
+        anchorFinished.resolve();
+        return;
+      }
+      if (date === "2032-06-01") {
+        await route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "anchor_date must allow a complete 30-day window" }),
+        });
+        return;
+      }
+      if (date === "2032-05-07") {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Daily Summary is unavailable" }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    const panel = page.getByTestId("daily-summary");
+    await expect(panel.getByRole("heading", { name: "Daily Summary", exact: true })).toBeVisible();
+    await expect(page.getByTestId("total-balance")).toBeVisible();
+    await panel.getByTestId("daily-anchor").fill(anchor);
+    await anchorStarted.promise;
+    await expect(panel.getByTestId("daily-loading")).toBeVisible();
+    await expect(panel.getByTestId("daily-average-7")).toHaveText("Pending…");
+
+    await panel.getByTestId("daily-anchor").fill("2032-04-07");
+    await expect(panel.getByTestId("daily-empty")).toContainText("No posted expenses");
+    await expect(panel.getByTestId("daily-average-7")).toHaveText("₹0.00");
+    await expect(panel.getByTestId("daily-average-30")).toHaveText("₹0.00");
+    releaseAnchor.resolve();
+    await anchorFinished.promise;
+    await expect(panel.getByTestId("daily-empty")).toContainText("2032-04-07");
+
+    await panel.getByTestId("daily-anchor").fill(anchor);
+    await expect(panel.getByTestId("daily-average-7")).toHaveText("₹92.86");
+    await expect(panel.getByTestId("daily-average-30")).toHaveText("₹26.67");
+    await expect(panel.getByTestId("daily-day-2032-03-01-amount")).toHaveText("₹100.00");
+    await expect(panel.getByTestId("daily-day-2032-03-02-amount")).toHaveText("₹0.00");
+    await expect(panel.getByTestId("daily-day-2032-03-03-amount")).toHaveText("₹200.00");
+    await expect(panel.getByTestId("daily-day-2032-03-07-amount")).toHaveText("₹350.00");
+    await expect(panel.getByLabel("2032-03-02: ₹0.00 spent", { exact: true })).toBeVisible();
+    await expect(panel.getByLabel("2032-03-07: ₹350.00 spent", { exact: true })).toBeVisible();
+    await expect(panel.getByText("F07 hidden expense", { exact: true })).toHaveCount(0);
+    await expect(panel.getByText("F07 excluded transfer", { exact: true })).toHaveCount(0);
+    await expect(panel.getByText("F07 excluded income", { exact: true })).toHaveCount(0);
+    await expect(panel.getByText("F07 before 30 days", { exact: true })).toHaveCount(0);
+    await expect(panel.getByText("F07 after anchor", { exact: true })).toHaveCount(0);
+
+    // The normal Overview mutation refresh must reload this selected anchor.
+    await page.getByTestId("transaction-name").fill("F07 form refresh expense");
+    await page.getByTestId("transaction-account").selectOption({ label: "F07 visible · INR" });
+    await page.getByTestId("transaction-category").selectOption({ label: "Uncategorized" });
+    await page.getByTestId("transaction-amount").fill("10");
+    await page
+      .locator("form")
+      .filter({ has: page.getByTestId("transaction-name") })
+      .getByLabel("Date", { exact: true })
+      .fill(anchor);
+    const created = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/transactions") && response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Record expense", exact: true }).click();
+    entryIds.push(((await (await created).json()).id) as number);
+    await expect(panel.getByTestId("daily-anchor")).toHaveValue(anchor);
+    await expect(panel.getByTestId("daily-day-2032-03-07-amount")).toHaveText("₹360.00");
+    await expect(panel.getByTestId("daily-average-7")).toHaveText("₹94.29");
+    await expect(panel.getByTestId("daily-average-30")).toHaveText("₹27.00");
+
+    await panel.getByTestId("daily-anchor").fill("2032-06-01");
+    await expect(panel.getByTestId("daily-error")).toContainText("complete 30-day window");
+    await expect(panel.getByTestId("daily-average-7")).toHaveText("Unavailable");
+    await panel.getByTestId("daily-anchor").fill("2032-05-07");
+    await expect(panel.getByTestId("daily-error")).toContainText("Daily Summary is unavailable");
+    await expect(panel.getByTestId("daily-average-30")).toHaveText("Unavailable");
+    await expect(panel.getByTestId("daily-chart")).toHaveCount(0);
+  } finally {
+    if (transferId !== null) await request.delete(`/api/transfers/${transferId}`);
+    for (const entryId of entryIds) await request.delete(`/api/transactions/${entryId}`);
+  }
+});

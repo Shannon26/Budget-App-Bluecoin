@@ -3,6 +3,7 @@ import type {
   AccountUpdate,
   BudgetState,
   Category,
+  DailySummaryReport,
   FilterDefinition,
   ItemsSummaryReport,
   LedgerEntry,
@@ -66,6 +67,8 @@ export const api = {
     request<NetEarningsReport>(`/reports/net-earnings?month=${encodeURIComponent(month)}`),
   itemsSummary: (month: string) =>
     request<ItemsSummaryReport>(`/reports/items-summary?month=${encodeURIComponent(month)}`),
+  dailySummary: (anchorDate: string) =>
+    request<DailySummaryReport>(`/reports/daily-summary?anchor_date=${encodeURIComponent(anchorDate)}`),
   createAccount: (input: {
     name: string;
     currency: string;

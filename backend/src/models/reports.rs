@@ -12,6 +12,11 @@ pub struct ItemsSummaryReportQuery {
     pub month: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DailySummaryReportQuery {
+    pub anchor_date: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportPeriod {
     pub start_date: String,
@@ -84,5 +89,24 @@ pub struct ItemsSummaryReport {
     pub current: ReportPeriod,
     pub income_items: Vec<ReportItem>,
     pub expense_items: Vec<ReportItem>,
+    pub invalid_date_entry_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DailySpending {
+    pub date: String,
+    pub expense_minor: i64,
+}
+
+/// Seven chart days ending on the anchor, plus full-window expense averages.
+/// Averages round to the nearest integer paise, with exact halves rounded up.
+#[derive(Debug, Clone, Serialize)]
+pub struct DailySummaryReport {
+    pub anchor_date: String,
+    pub seven_day_start_date: String,
+    pub thirty_day_start_date: String,
+    pub average_7_minor: i64,
+    pub average_30_minor: i64,
+    pub days: Vec<DailySpending>,
     pub invalid_date_entry_count: i64,
 }

@@ -18,3 +18,12 @@ pub(crate) async fn items_summary(
 ) -> AppResult<Json<ItemsSummaryReport>> {
     Ok(Json(state.store.items_summary_report(&query.month).await?))
 }
+
+pub(crate) async fn daily_summary(
+    State(state): State<AppState>,
+    Query(query): Query<DailySummaryReportQuery>,
+) -> AppResult<Json<DailySummaryReport>> {
+    Ok(Json(
+        state.store.daily_summary_report(&query.anchor_date).await?,
+    ))
+}

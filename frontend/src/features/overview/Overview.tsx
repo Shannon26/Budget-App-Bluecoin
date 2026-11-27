@@ -11,6 +11,7 @@ import {
 import TransactionForm from "../ledger/TransactionForm";
 import TransferForm from "../transfers/TransferForm";
 import { activityDetails } from "./activity";
+import DailySummary from "./DailySummary";
 import type { OverviewForms } from "./useOverviewForms";
 
 interface OverviewProps {
@@ -97,6 +98,8 @@ export default function Overview({
           <span>Money spent</span>
         </article>
       </section>
+
+      <DailySummary appState={data} />
 
       <div className="dashboard-grid">
         <section className="panel accounts-panel">

@@ -85,6 +85,10 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             get(routes::reports::items_summary),
         )
         .route(
+            "/api/reports/daily-summary",
+            get(routes::reports::daily_summary),
+        )
+        .route(
             "/api/categories",
             get(routes::categories::list_categories).post(routes::categories::create_category),
         )

@@ -20,6 +20,16 @@ async fn items_report(app: &Router, month: &str) -> (StatusCode, Value) {
     .await
 }
 
+async fn daily_report(app: &Router, anchor_date: &str) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "GET",
+        &format!("/api/reports/daily-summary?anchor_date={anchor_date}"),
+        json!({}),
+    )
+    .await
+}
+
 async fn create_report_category(
     app: &Router,
     kind: &str,
@@ -791,5 +801,254 @@ async fn items_summary_empty_invalid_month_and_overflow_are_explicit() {
     assert_eq!(
         body["error"],
         "report income item total is outside the supported integer range"
+    );
+}
+
+#[tokio::test]
+async fn daily_summary_includes_boundaries_zero_days_and_full_window_averages() {
+    let (app, _pool, _directory) = setup().await;
+    let account_id = create_account(&app, "Daily boundary account", 0).await;
+    for (amount, date) in [
+        (99_000, "2025-12-08T23:59:59Z"),
+        (15, "2025-12-09"),
+        (10, "2025-12-31T23:59:59"),
+        (100, "2026-01-01"),
+        (200, "2026-01-03T12:00:00"),
+        (300, "2026-01-07T23:59:59+05:30"),
+        (999, "2026-01-08"),
+    ] {
+        create_entry_at(
+            &app,
+            "expense",
+            account_id,
+            amount,
+            "Daily boundary",
+            None,
+            date,
+        )
+        .await;
+    }
+
+    let (status, body) = daily_report(&app, "2026-01-07").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["anchor_date"], "2026-01-07");
+    assert_eq!(body["seven_day_start_date"], "2026-01-01");
+    assert_eq!(body["thirty_day_start_date"], "2025-12-09");
+    assert_eq!(body["average_7_minor"], 86);
+    assert_eq!(body["average_30_minor"], 21);
+    let days = body["days"].as_array().unwrap();
+    assert_eq!(days.len(), 7);
+    assert_eq!(days[0]["date"], "2026-01-01");
+    assert_eq!(days[0]["expense_minor"], 100);
+    assert_eq!(days[1]["expense_minor"], 0);
+    assert_eq!(days[2]["expense_minor"], 200);
+    assert_eq!(days[3]["expense_minor"], 0);
+    assert_eq!(days[4]["expense_minor"], 0);
+    assert_eq!(days[5]["expense_minor"], 0);
+    assert_eq!(days[6]["date"], "2026-01-07");
+    assert_eq!(days[6]["expense_minor"], 300);
+}
+
+#[tokio::test]
+async fn daily_summary_rounds_half_paise_up_and_returns_real_empty_zeroes() {
+    let (app, _pool, _directory) = setup().await;
+    let account_id = create_account(&app, "Daily rounding account", 0).await;
+    create_entry_at(
+        &app,
+        "expense",
+        account_id,
+        15,
+        "Half paise average",
+        None,
+        "2030-01-01",
+    )
+    .await;
+
+    let (status, body) = daily_report(&app, "2030-01-30").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["thirty_day_start_date"], "2030-01-01");
+    assert_eq!(body["average_30_minor"], 1);
+    assert_eq!(body["average_7_minor"], 0);
+    assert!(body["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|day| day["expense_minor"] == 0));
+
+    let (status, empty) = daily_report(&app, "2030-02-28").await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    assert_eq!(empty["average_7_minor"], 0);
+    assert_eq!(empty["average_30_minor"], 0);
+    assert_eq!(empty["days"].as_array().unwrap().len(), 7);
+    assert!(empty["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|day| day["expense_minor"] == 0));
+}
+
+#[tokio::test]
+async fn daily_summary_uses_posted_expenses_visibility_and_invalid_date_rules() {
+    let (app, pool, _directory) = setup().await;
+    let visible = create_account(&app, "Daily visible", 999_999).await;
+    let picker_hidden = create_account(&app, "Daily picker hidden", 0).await;
+    let report_hidden = create_account(&app, "Daily report hidden", 0).await;
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{picker_hidden}"),
+        json!({ "hide_from_selection": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{report_hidden}"),
+        json!({ "hide_from_reports": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    create_entry_at(
+        &app,
+        "expense",
+        visible,
+        100,
+        "Visible expense",
+        None,
+        "2026-11-27",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        picker_hidden,
+        200,
+        "Picker expense",
+        None,
+        "2026-11-27T12:00:00",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        report_hidden,
+        9_999,
+        "Hidden expense",
+        None,
+        "2026-11-27",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        visible,
+        5_000,
+        "Income excluded",
+        None,
+        "2026-11-27",
+    )
+    .await;
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": visible,
+            "to_account_id": picker_hidden,
+            "amount_minor": 777,
+            "name": "Transfer excluded",
+            "occurred_at": "2026-11-27T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for (account_id, kind, name, invalid) in [
+        (visible, "expense", "Invalid visible expense", "not-a-date"),
+        (
+            visible,
+            "income",
+            "Invalid visible income",
+            "2026-02-30T12:00:00Z",
+        ),
+        (report_hidden, "expense", "Invalid hidden", "bad-date"),
+    ] {
+        sqlx::query(
+            "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+             VALUES (?, ?, 100, ?, 'legacy invalid', ?, '2026-11-01T00:00:00Z', NULL)",
+        )
+        .bind(kind)
+        .bind(account_id)
+        .bind(name)
+        .bind(invalid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (status, body) = daily_report(&app, "2026-11-27").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["days"][6]["expense_minor"], 300);
+    assert_eq!(body["average_7_minor"], 43);
+    assert_eq!(body["average_30_minor"], 10);
+    assert_eq!(body["invalid_date_entry_count"], 2);
+    let current = state(&app).await;
+    assert_eq!(current["totals"]["income_minor"], 5_100);
+    assert_eq!(current["totals"]["expense_minor"], 10_499);
+}
+
+#[tokio::test]
+async fn daily_summary_rejects_invalid_or_early_anchors_and_controls_overflow() {
+    let (app, pool, _directory) = setup().await;
+    for anchor in [
+        "",
+        "not-a-date",
+        "2026-02-30",
+        "2026-1-01",
+        "2026-01-01T00:00:00",
+    ] {
+        let (status, body) = daily_report(&app, anchor).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{anchor}: {body}");
+        assert_eq!(
+            body["error"],
+            "anchor_date must be a valid calendar date in YYYY-MM-DD format"
+        );
+    }
+    for anchor in ["0000-01-01", "0000-01-29"] {
+        let (status, body) = daily_report(&app, anchor).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{anchor}: {body}");
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("complete 30-day window"));
+    }
+    let (status, year_zero) = daily_report(&app, "0000-12-31").await;
+    assert_eq!(status, StatusCode::OK, "{year_zero}");
+    assert_eq!(year_zero["thirty_day_start_date"], "0000-12-02");
+    let (status, earliest) = daily_report(&app, "0000-01-30").await;
+    assert_eq!(status, StatusCode::OK, "{earliest}");
+    assert_eq!(earliest["thirty_day_start_date"], "0000-01-01");
+    assert_eq!(earliest["seven_day_start_date"], "0000-01-24");
+    let (status, latest) = daily_report(&app, "9999-12-31").await;
+    assert_eq!(status, StatusCode::OK, "{latest}");
+    assert_eq!(latest["days"][6]["date"], "9999-12-31");
+
+    let account_id = create_account(&app, "Daily overflow", 0).await;
+    for _ in 0..2 {
+        sqlx::query(
+            "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+             VALUES ('expense', ?, ?, 'Overflow day', '', '2026-11-27', '2026-11-27T00:00:00Z', NULL)",
+        )
+        .bind(account_id)
+        .bind(i64::MAX)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let (status, body) = daily_report(&app, "2026-11-27").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"],
+        "daily expense total is outside the supported integer range"
     );
 }

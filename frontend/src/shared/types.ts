@@ -102,6 +102,21 @@ export interface ItemsSummaryReport {
   invalid_date_entry_count: number;
 }
 
+export interface DailySpending {
+  date: string;
+  expense_minor: number;
+}
+
+export interface DailySummaryReport {
+  anchor_date: string;
+  seven_day_start_date: string;
+  thirty_day_start_date: string;
+  average_7_minor: number;
+  average_30_minor: number;
+  days: DailySpending[];
+  invalid_date_entry_count: number;
+}
+
 export interface Totals {
   income_minor: number;
   expense_minor: number;

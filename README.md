@@ -159,6 +159,7 @@ All amounts are integer minor units.
 | `GET` | `/api/ledger` | Paginated filtered combined ledger with full-day totals; supports `limit` and `offset` |
 | `GET` | `/api/ledger/export` | UTF-8 CSV of every transaction matching the same filter query parameters; ignores `limit` and `offset` |
 | `GET` | `/api/reports/items-summary?month=YYYY-MM` | Selected-month income/expense totals and ranked exact-name item groups with counts |
+| `GET` | `/api/reports/daily-summary?anchor_date=YYYY-MM-DD` | Seven-day expense chart values and full-window 7/30-day average expenses |
 | `POST` | `/api/transactions` | Create income/expense |
 | `GET/PUT/DELETE` | `/api/transactions/:id` | Detail/edit/permanent delete |
 | `POST` | `/api/transactions/:id/duplicate` | Duplicate transaction |
@@ -185,6 +186,8 @@ Ledger, account history, saved filters, and CSV export share these input rules:
 - Daily, category, and budget aggregates accumulate in wider integer paise and return HTTP 409 if a requested `i64` output cannot represent the total.
 
 Items Summary groups transaction names exactly and case-sensitively; notes are not searched. Income and expenses rank separately by descending total, with exact-name order breaking display ties. Equal totals share a competition rank (`1, 2, 2, 4`). It uses the same report-month, account visibility, invalid-date, transfer, and opening-balance rules as Net Earnings.
+
+Daily Summary requires a strict local `anchor_date=YYYY-MM-DD` and includes that day. Its chart covers the anchor and previous six calendar days, including real zero-spend days. Both averages use their full 7- or 30-calendar-day window and round to the nearest integer paise, with exact halves rounded up. Anchors before `0000-01-30` cannot provide a complete non-negative 30-day window and return HTTP 400. Only posted expenses count; report visibility, invalid-date, transfer, and opening-balance rules match the other reports.
 
 Example transaction:
 
