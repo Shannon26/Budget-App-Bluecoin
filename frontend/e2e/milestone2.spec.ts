@@ -81,8 +81,14 @@ async function downloadLedgerCsv(page: Page): Promise<string[][]> {
   return parseCsv(await readFile(downloadPath!, "utf8"));
 }
 
-async function createAccount(page: import("@playwright/test").Page, name: string, opening: string) {
+async function createAccount(
+  page: import("@playwright/test").Page,
+  name: string,
+  opening: string,
+  accountType?: string,
+) {
   await page.getByTestId("account-name").fill(name);
+  if (accountType) await page.getByTestId("account-type").selectOption(accountType);
   await page.getByTestId("opening-balance").fill(opening);
   await page.getByTestId("create-account").click();
   await expect(page.locator(`[data-account-name="${name}"]`)).toBeVisible();
@@ -97,6 +103,17 @@ async function openEntry(page: import("@playwright/test").Page, kind: string, na
   await row.click();
   await expect(page.getByRole("dialog", { name: "Entry details" })).toBeVisible();
 }
+
+test("account type catalog is usable in the empty overview", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Start with an account", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("account-type")).toBeEnabled();
+  await expect(page.getByTestId("account-type-group")).toHaveText("Unclassified");
+  const optionLabels = await page.getByTestId("account-type").locator("option").allTextContents();
+  expect(optionLabels).toContain("Cash");
+  expect(optionLabels).toContain("Credit Card");
+  expect(optionLabels).toContain("Loan");
+});
 
 test("category editor keeps new hierarchy changes at two levels", async ({ page }) => {
   await page.goto("/");
@@ -256,6 +273,15 @@ test("milestone 2 category and transaction management flow", async ({ page, requ
   await openEntry(page, "transfer", "E2E Transfer");
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page.getByTestId("edit-amount").fill("600");
+  const transferFrom = await page.getByTestId("edit-account").inputValue();
+  const transferTo = await page.getByTestId("edit-counterpart").inputValue();
+  await page.getByTestId("edit-counterpart").selectOption(transferFrom);
+  await expect(page.getByTestId("edit-account")).toHaveValue(transferFrom);
+  await expect(page.getByTestId("edit-counterpart")).toHaveValue(transferFrom);
+  await expect(page.getByRole("alert")).toContainText("Choose two different accounts");
+  await expect(page.getByTestId("save-edit")).toBeDisabled();
+  await page.getByTestId("edit-counterpart").selectOption(transferTo);
+  await expect(page.getByTestId("save-edit")).toBeEnabled();
   await page.getByTestId("save-edit").click();
 
   await page.getByTestId("nav-overview").click();
@@ -702,11 +728,26 @@ test("budget responses stay tied to their selected month and invalid dates are f
       json: body,
     });
   });
+  await page.route(/\/api\/category-budgets\?month=2028-03$/, async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Could not load budgets" }),
+    });
+  });
 
   await page.getByTestId("budget-month").fill(monthA);
   await oldLoadStarted.promise;
   await expect(page.getByText("Loading budgets…")).toBeVisible();
   await expect(page.getByTestId(`edit-budget-${foodId}`)).toHaveCount(0);
+  await expect(page.getByTestId("budget-total-spent")).toHaveText("Pending…");
+  await expect(page.getByTestId("budget-uncategorized-spent")).toHaveText("Pending…");
+  await expect(page.getByTestId("budget-expense-count")).toHaveText("Expense count pending");
+  await page.getByTestId("budget-month").fill("2028-03");
+  await expect(page.getByText("Could not load budgets.")).toBeVisible();
+  await expect(page.getByTestId("budget-total-spent")).toHaveText("Unavailable");
+  await expect(page.getByTestId("budget-uncategorized-spent")).toHaveText("Unavailable");
+  await expect(page.getByTestId("budget-expense-count")).toHaveText("Expense count unavailable");
   await page.getByTestId("budget-month").fill(monthB);
   await expect(page.getByTestId("budget-total-spent")).toContainText("678.90");
   await expect(page.getByTestId("budget-invalid-date-warning")).toContainText(
@@ -717,6 +758,13 @@ test("budget responses stay tied to their selected month and invalid dates are f
   await oldLoadFinished.promise;
   await expect(page.getByTestId("budget-month")).toHaveValue(monthB);
   await expect(page.getByTestId("budget-total-spent")).toContainText("678.90");
+
+  await page.getByTestId("budget-month").fill("2030-01");
+  await expect(page.getByTestId("budget-total-spent")).toHaveText("₹0.00");
+  await expect(page.getByTestId("budget-uncategorized-spent")).toHaveText("₹0.00");
+  await expect(page.getByTestId("budget-expense-count")).toHaveText(
+    "0 expenses · income and transfers excluded",
+  );
 
   await page.getByTestId("budget-month").fill(monthA);
   await expect(page.getByTestId("budget-total-spent")).toContainText("123.45");
@@ -769,4 +817,395 @@ test("budget responses stay tied to their selected month and invalid dates are f
   await removeFinished.promise;
   await expect(page.getByTestId("budget-month")).toHaveValue(monthA);
   await expect(page.getByTestId("budget-total-spent")).toContainText("123.45");
+});
+
+test("account types round-trip assets and liabilities without changing balances or history", async ({
+  page,
+  request,
+}) => {
+  const legacyResponse = await request.post("/api/accounts", {
+    data: { name: "F01 Legacy", currency: "INR", opening_balance_minor: 0 },
+  });
+  expect(legacyResponse.ok()).toBeTruthy();
+  const legacyId = (await legacyResponse.json()).id as number;
+
+  await page.goto("/");
+  const legacyCard = page.locator(`[data-account-name="F01 Legacy"]`);
+  await expect(
+    legacyCard.getByTestId(`account-classification-${legacyId}`).locator("span"),
+  ).toHaveText(["Unclassified", "Unclassified"]);
+
+  await createAccount(page, "F01 Checking", "100000", "checking");
+  const checkingCard = page.locator('[data-account-name="F01 Checking"]');
+  const checkingClassification = checkingCard.getByTestId(/account-classification-\d+/);
+  await expect(checkingClassification).toContainText("Checking");
+  await expect(checkingClassification).toContainText("Asset");
+
+  await createAccount(page, "F01 Card", "-5000", "credit_card");
+  const card = page.locator('[data-account-name="F01 Card"]');
+  await expect(card.getByTestId(/account-classification-\d+/)).toContainText("Credit Card");
+  await expect(card.getByTestId(/account-classification-\d+/)).toContainText("Liability");
+
+  const state = await (await request.get("/api/state")).json();
+  const checkingId = state.accounts.find(
+    (account: { name: string }) => account.name === "F01 Checking",
+  ).id as number;
+  const expenseResponse = await request.post("/api/transactions", {
+    data: {
+      kind: "expense",
+      account_id: checkingId,
+      amount_minor: 2500,
+      name: "F01 history expense",
+      occurred_at: "2026-11-20T12:00:00",
+    },
+  });
+  expect(expenseResponse.ok()).toBeTruthy();
+  await page.reload();
+  await expect(balance(page, "F01 Checking")).toContainText("99,975.00");
+
+  await checkingCard.getByTestId(`account-type-edit-${checkingId}`).click();
+  await checkingCard.getByTestId(`edit-account-type-${checkingId}`).selectOption("credit_card");
+  await expect(checkingCard.getByTestId(`edit-account-type-${checkingId}-group`)).toHaveText(
+    "Liability",
+  );
+  await checkingCard.getByTestId(`save-account-type-${checkingId}`).click();
+  await expect(checkingCard.getByTestId(`account-classification-${checkingId}`)).toContainText(
+    "Credit Card",
+  );
+  await expect(checkingCard.getByTestId(`account-classification-${checkingId}`)).toContainText(
+    "Liability",
+  );
+  await expect(balance(page, "F01 Checking")).toContainText("99,975.00");
+
+  await checkingCard.getByTestId(`account-type-edit-${checkingId}`).click();
+  await checkingCard.getByTestId(`edit-account-type-${checkingId}`).selectOption("savings");
+  await expect(checkingCard.getByTestId(`edit-account-type-${checkingId}-group`)).toHaveText(
+    "Asset",
+  );
+  await checkingCard.getByTestId(`save-account-type-${checkingId}`).click();
+  await expect(checkingCard.getByTestId(`account-classification-${checkingId}`)).toContainText(
+    "Savings",
+  );
+  await expect(balance(page, "F01 Checking")).toContainText("99,975.00");
+
+  await page.reload();
+  await expect(checkingCard.getByTestId(`account-classification-${checkingId}`)).toContainText(
+    "Savings",
+  );
+  await expect(checkingCard.getByTestId(`account-classification-${checkingId}`)).toContainText(
+    "Asset",
+  );
+  await checkingCard.getByTestId(`account-history-${checkingId}`).click();
+  await expect(page.getByRole("heading", { name: "F01 Checking" })).toBeVisible();
+  await expect(
+    page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "F01 history expense" }),
+  ).toHaveCount(1);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹25.00");
+
+  await page.getByTestId("nav-overview").click();
+  await page.route(`**/api/accounts/${legacyId}`, async (route) => {
+    if (route.request().method() === "PUT") {
+      await route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "account type is not supported" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await legacyCard.getByTestId(`account-type-edit-${legacyId}`).click();
+  await legacyCard.getByTestId(`edit-account-type-${legacyId}`).selectOption("loan");
+  await legacyCard.getByTestId(`save-account-type-${legacyId}`).click();
+  await expect(legacyCard.getByRole("alert")).toHaveText("account type is not supported");
+  await expect(legacyCard.getByTestId(`account-classification-${legacyId}`)).toContainText(
+    "Unclassified",
+  );
+  await page.unroute(`**/api/accounts/${legacyId}`);
+
+  await legacyCard.getByTestId(`save-account-type-${legacyId}`).click();
+  await expect(legacyCard.getByTestId(`account-classification-${legacyId}`)).toContainText("Loan");
+  await expect(legacyCard.getByTestId(`account-classification-${legacyId}`)).toContainText(
+    "Liability",
+  );
+  await page.reload();
+  await expect(legacyCard.getByTestId(`account-classification-${legacyId}`)).toContainText("Loan");
+});
+
+test("account metadata persists and hide-selection preserves historical editing", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("account-name").fill("F02 Main");
+  await page.getByTestId("account-type").selectOption("checking");
+  await page.getByTestId("account-note").fill("Main account note");
+  await page.getByTestId("account-opening-date").fill("2024-02-29");
+  await page.getByTestId("opening-balance").fill("100000");
+  await page.getByTestId("create-account").click();
+
+  const initialState = await (await request.get("/api/state")).json();
+  const mainId = initialState.accounts.find(
+    (account: { name: string }) => account.name === "F02 Main",
+  ).id as number;
+  let mainCard = page.locator('[data-account-name="F02 Main"]');
+  await expect(mainCard.getByTestId(`account-note-${mainId}`)).toHaveText("Main account note");
+  await expect(mainCard.getByTestId(`account-opening-date-${mainId}`)).toContainText("2024-02-29");
+  await page.reload();
+  mainCard = page.locator('[data-account-name="F02 Main"]');
+  await expect(mainCard.getByTestId(`account-note-${mainId}`)).toHaveText("Main account note");
+  await expect(mainCard.getByTestId(`account-opening-date-${mainId}`)).toContainText("2024-02-29");
+
+  await page.getByTestId("account-name").fill("F02 Spare");
+  await page.getByTestId("account-type").selectOption("savings");
+  await page.getByTestId("account-hide-from-reports").check();
+  await page.getByTestId("opening-balance").fill("50000");
+  await page.getByTestId("create-account").click();
+  const spareCard = page.locator('[data-account-name="F02 Spare"]');
+  await expect(spareCard).toBeVisible();
+  const spareState = await (await request.get("/api/state")).json();
+  const spareId = spareState.accounts.find(
+    (account: { name: string }) => account.name === "F02 Spare",
+  ).id as number;
+  await expect(spareCard.getByTestId(`account-visibility-${spareId}`)).toContainText(
+    "Hidden from new pickers",
+  );
+  await expect(spareCard.getByTestId(`account-visibility-${spareId}`)).toContainText(
+    "Hidden from future reports",
+  );
+  await expect(
+    page.getByTestId("transaction-account").locator("option").filter({ hasText: "F02 Spare" }),
+  ).toHaveCount(0);
+  await page.getByTestId("transaction-name").fill("F02 historical expense");
+  await page.getByTestId("transaction-account").selectOption({ label: "F02 Main · INR" });
+  await page.getByTestId("transaction-amount").fill("25");
+  await page.getByRole("button", { name: "Record expense", exact: true }).click();
+  await expect(balance(page, "F02 Main")).toContainText("99,975.00");
+
+  // An active create draft must be invalidated when its selected account is hidden.
+  await page.getByTestId("transaction-account").selectOption({ label: "F02 Main · INR" });
+  await mainCard.getByTestId(`account-type-edit-${mainId}`).click();
+  await mainCard.getByTestId(`edit-account-name-${mainId}`).fill("F02 Renamed");
+  await mainCard.getByTestId(`edit-account-note-${mainId}`).fill("");
+  await mainCard.getByTestId(`edit-account-opening-date-${mainId}`).fill("");
+  await mainCard.getByTestId(`edit-account-hide-selection-${mainId}`).check();
+  await mainCard.getByTestId(`edit-account-hide-reports-${mainId}`).check();
+  await mainCard.getByTestId(`save-account-type-${mainId}`).click();
+
+  const renamedCard = page.locator('[data-account-name="F02 Renamed"]');
+  await expect(renamedCard.getByTestId(`account-opening-date-${mainId}`)).toContainText("Not set");
+  await expect(renamedCard.getByTestId(`account-note-${mainId}`)).toHaveCount(0);
+  await expect(renamedCard.getByTestId(`account-visibility-${mainId}`)).toContainText(
+    "Hidden from new pickers",
+  );
+  await expect(renamedCard.getByTestId(`account-visibility-${mainId}`)).toContainText(
+    "Hidden from future reports",
+  );
+  await expect(balance(page, "F02 Renamed")).toContainText("99,975.00");
+  await expect(page.getByTestId("transaction-account")).toHaveValue("");
+  await expect(
+    page.getByTestId("transaction-account").locator("option").filter({ hasText: "F02 Renamed" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByTestId("transfer-from").locator("option").filter({ hasText: "F02 Renamed" }),
+  ).toHaveCount(0);
+
+  await page.reload();
+  await expect(renamedCard.getByTestId(`account-visibility-${mainId}`)).toContainText(
+    "Hidden from new pickers",
+  );
+
+  // Existing-entry editors, histories, and ledger filters still include hidden accounts.
+  await page.getByTestId("nav-ledger").click();
+  await openEntry(page, "expense", "F02 historical expense");
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const historicalAccount = page.getByTestId("edit-account");
+  await expect(historicalAccount.locator(`option[value="${mainId}"]`)).toContainText(
+    "hidden from new entries",
+  );
+  await historicalAccount.selectOption(String(mainId));
+  await page.getByRole("textbox", { name: "Note", exact: true }).fill("Edited historical note");
+  await page.getByTestId("save-edit").click();
+  await expect(page.getByRole("dialog", { name: "Entry details" })).toBeHidden();
+  await expect(page.getByTestId("filter-account").locator(`option[value="${mainId}"]`)).toHaveCount(1);
+  await page.getByTestId("filter-account").selectOption(String(mainId));
+  await page.getByTestId("apply-filters").click();
+  await expect(
+    page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "F02 historical expense" }),
+  ).toHaveCount(1);
+
+  await page.getByTestId("nav-overview").click();
+  await expect(balance(page, "F02 Renamed")).toContainText("99,975.00");
+  await renamedCard.getByTestId(`account-history-${mainId}`).click();
+  await expect(page.getByRole("heading", { name: "F02 Renamed" })).toBeVisible();
+  await expect(
+    page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "F02 historical expense" }),
+  ).toHaveCount(1);
+
+  // Hiding every remaining selectable account produces an explicit empty state.
+  await page.getByTestId("nav-overview").click();
+  const state = await (await request.get("/api/state")).json();
+  for (
+    const account of state.accounts as Array<{
+      id: number;
+      hide_from_selection: boolean;
+      hide_from_reports: boolean;
+    }>
+  ) {
+    if (!account.hide_from_selection && !account.hide_from_reports) {
+      const response = await request.put(`/api/accounts/${account.id}`, {
+        data: { hide_from_selection: true },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+  }
+  await page.reload();
+  await expect(page.getByText(/All accounts are hidden from new entries/)).toBeVisible();
+  await expect(page.getByTestId("transaction-account")).toBeDisabled();
+  await expect(page.getByTestId("transaction-account")).toContainText("No selectable accounts");
+  await expect(page.getByTestId("submit-transfer")).toBeDisabled();
+
+  // Metadata and hide settings can be explicitly cleared and restored.
+  await renamedCard.getByTestId(`account-type-edit-${mainId}`).click();
+  await renamedCard.getByTestId(`edit-account-note-${mainId}`).fill("Restored note");
+  await renamedCard.getByTestId(`edit-account-opening-date-${mainId}`).fill("2026-11-27");
+  await renamedCard.getByTestId(`edit-account-hide-reports-${mainId}`).uncheck();
+  await renamedCard.getByTestId(`edit-account-hide-selection-${mainId}`).uncheck();
+  await renamedCard.getByTestId(`save-account-type-${mainId}`).click();
+  await expect(renamedCard.getByTestId(`account-note-${mainId}`)).toHaveText("Restored note");
+  await expect(renamedCard.getByTestId(`account-opening-date-${mainId}`)).toContainText("2026-11-27");
+  await expect(renamedCard.getByTestId(`account-visibility-${mainId}`)).toHaveCount(0);
+  await expect(
+    page.getByTestId("transaction-account").locator("option").filter({ hasText: "F02 Renamed" }),
+  ).toHaveCount(1);
+  await page.reload();
+  await expect(renamedCard.getByTestId(`account-note-${mainId}`)).toHaveText("Restored note");
+});
+
+test("hidden account selections stay cleared across refreshes until explicitly chosen", async ({
+  page,
+  request,
+}) => {
+  const ids: number[] = [];
+  for (const name of ["Picker A", "Picker B", "Picker C", "Picker D"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 0 },
+    });
+    expect(response.ok()).toBeTruthy();
+    ids.push((await response.json()).id as number);
+  }
+  const [aId, bId, cId, dId] = ids;
+  const state = await (await request.get("/api/state")).json();
+  for (const account of state.accounts as Array<{ id: number; hide_from_selection: boolean }>) {
+    if (!ids.includes(account.id) && !account.hide_from_selection) {
+      const response = await request.put(`/api/accounts/${account.id}`, {
+        data: { hide_from_selection: true },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+  }
+
+  await page.goto("/");
+  await expect(page.getByTestId("transaction-account")).toHaveValue(String(aId));
+  await expect(page.getByTestId("transfer-from")).toHaveValue(String(aId));
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(bId));
+  await page.getByTestId("transfer-from").selectOption(String(bId));
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(bId));
+
+  await page.getByTestId("transaction-name").fill("Picker transaction draft");
+  await page.getByTestId("transaction-amount").fill("12.34");
+  await page.getByTestId("transfer-name").fill("Picker transfer draft");
+  await page.getByTestId("transfer-amount").fill("56.78");
+  await page.getByTestId("submit-transfer").click();
+  await expect(page.getByRole("alert")).toContainText("Choose two different accounts");
+  await page.getByTestId("transaction-account").selectOption(String(bId));
+  await page.getByTestId("transfer-from").selectOption(String(bId));
+  await page.getByTestId("transfer-to").selectOption(String(cId));
+
+  const hideSourceResponse = await request.put(`/api/accounts/${bId}`, {
+    data: { hide_from_selection: true },
+  });
+  expect(hideSourceResponse.ok()).toBeTruthy();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByTestId("transaction-account")).toHaveValue("");
+  await expect(page.getByTestId("transfer-from")).toHaveValue("");
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(cId));
+  await expect(page.getByTestId("transaction-name")).toHaveValue("Picker transaction draft");
+  await expect(page.getByTestId("transaction-amount")).toHaveValue("12.34");
+  await expect(page.getByTestId("transfer-name")).toHaveValue("Picker transfer draft");
+  await expect(page.getByTestId("transfer-amount")).toHaveValue("56.78");
+
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByTestId("transaction-account")).toHaveValue("");
+  await expect(page.getByTestId("transfer-from")).toHaveValue("");
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(cId));
+
+  await page.getByTestId("transaction-account").selectOption(String(aId));
+  await page.getByTestId("transfer-from").selectOption(String(aId));
+  await expect(page.getByTestId("transaction-account")).toHaveValue(String(aId));
+  await expect(page.getByTestId("transfer-from")).toHaveValue(String(aId));
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(cId));
+
+  const hideDestinationResponse = await request.put(`/api/accounts/${cId}`, {
+    data: { hide_from_selection: true },
+  });
+  expect(hideDestinationResponse.ok()).toBeTruthy();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByTestId("transfer-to")).toHaveValue("");
+  await expect(page.getByTestId("transfer-from")).toHaveValue(String(aId));
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByTestId("transfer-to")).toHaveValue("");
+
+  await page.getByTestId("transfer-from").selectOption(String(dId));
+  await expect(page.getByTestId("transfer-to")).toHaveValue("");
+  await page.getByTestId("transfer-to").selectOption(String(aId));
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(aId));
+
+  await page.reload();
+  await expect(page.getByTestId("transaction-account")).toHaveValue(String(aId));
+  await expect(page.getByTestId("transfer-from")).toHaveValue(String(aId));
+  await expect(page.getByTestId("transfer-to")).toHaveValue(String(dId));
+});
+
+test("account editor sends only changed fields and preserves concurrent metadata", async ({
+  page,
+  request,
+}) => {
+  const createdResponse = await request.post("/api/accounts", {
+    data: {
+      name: "Diff account",
+      currency: "INR",
+      opening_balance_minor: 0,
+      note: "Original note",
+      opening_date: "2024-01-01",
+    },
+  });
+  expect(createdResponse.ok()).toBeTruthy();
+  const accountId = (await createdResponse.json()).id as number;
+  await page.goto("/");
+  const card = page.locator(`[data-account-name="Diff account"]`);
+  await card.getByTestId(`account-type-edit-${accountId}`).click();
+
+  const externalResponse = await request.put(`/api/accounts/${accountId}`, {
+    data: { note: "External note", opening_date: "2025-05-06" },
+  });
+  expect(externalResponse.ok()).toBeTruthy();
+  await card.getByTestId(`edit-account-name-${accountId}`).fill("Diff renamed");
+  await card.getByTestId(`save-account-type-${accountId}`).click();
+
+  const renamedCard = page.locator('[data-account-name="Diff renamed"]');
+  await expect(renamedCard.getByTestId(`account-note-${accountId}`)).toHaveText("External note");
+  await expect(renamedCard.getByTestId(`account-opening-date-${accountId}`)).toContainText(
+    "2025-05-06",
+  );
+
+  await renamedCard.getByTestId(`account-type-edit-${accountId}`).click();
+  await renamedCard.getByTestId(`edit-account-note-${accountId}`).fill("");
+  await renamedCard.getByTestId(`edit-account-opening-date-${accountId}`).fill("");
+  await renamedCard.getByTestId(`save-account-type-${accountId}`).click();
+  await expect(renamedCard.getByTestId(`account-note-${accountId}`)).toHaveCount(0);
+  await expect(renamedCard.getByTestId(`account-opening-date-${accountId}`)).toContainText("Not set");
+  await page.reload();
+  await expect(renamedCard.getByTestId(`account-note-${accountId}`)).toHaveCount(0);
+  await expect(renamedCard.getByTestId(`account-opening-date-${accountId}`)).toContainText("Not set");
 });

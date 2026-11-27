@@ -35,6 +35,8 @@ export default function EntryEditor({
   const [reconciled, setReconciled] = useState(entry.reconciled);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sameTransferAccount = isTransfer && accountId === counterpartId;
+  const visibleError = sameTransferAccount ? "Choose two different accounts" : error;
 
   const activeCategories = data.categories.filter(
     (category) =>
@@ -44,6 +46,10 @@ export default function EntryEditor({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (sameTransferAccount) {
+      setError("Choose two different accounts");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -94,7 +100,11 @@ export default function EntryEditor({
             ×
           </button>
         </div>
-        {error && <div className="message message-error">{error}</div>}
+        {visibleError && (
+          <div className="message message-error" role="alert">
+            {visibleError}
+          </div>
+        )}
         <form className="stack-form" onSubmit={submit}>
           <label>
             Name
@@ -152,6 +162,9 @@ export default function EntryEditor({
                 {data.accounts.map((account) => (
                   <option key={account.id} value={account.id}>
                     {account.name}
+                    {account.hide_from_selection || account.hide_from_reports
+                      ? " (hidden from new entries)"
+                      : ""}
                   </option>
                 ))}
               </select>
@@ -168,6 +181,9 @@ export default function EntryEditor({
                   {data.accounts.map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.name}
+                      {account.hide_from_selection || account.hide_from_reports
+                      ? " (hidden from new entries)"
+                      : ""}
                     </option>
                   ))}
                 </select>
@@ -207,7 +223,11 @@ export default function EntryEditor({
             />
             Reconciled
           </label>
-          <button className="primary-button" data-testid="save-edit" disabled={saving}>
+          <button
+            className="primary-button"
+            data-testid="save-edit"
+            disabled={saving || sameTransferAccount}
+          >
             {saving ? "Saving…" : "Save changes"}
           </button>
         </form>

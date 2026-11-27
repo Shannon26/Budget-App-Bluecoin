@@ -29,3 +29,11 @@ pub(crate) async fn account_history(
             .await?,
     ))
 }
+
+pub(crate) async fn update_account(
+    State(state): State<AppState>,
+    Path(account_id): Path<i64>,
+    Json(request): Json<UpdateAccountRequest>,
+) -> AppResult<Json<Account>> {
+    Ok(Json(state.store.update_account(account_id, request).await?))
+}

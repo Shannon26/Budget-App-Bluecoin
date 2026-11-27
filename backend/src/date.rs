@@ -18,6 +18,12 @@ pub fn date_only(value: &str) -> Option<String> {
     value.get(..10).map(str::to_string)
 }
 
+pub fn is_valid_calendar_date(value: &str) -> bool {
+    value.len() == 10
+        && has_iso_date_prefix(value)
+        && NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+}
+
 pub fn is_valid_month(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 7
@@ -86,6 +92,27 @@ mod tests {
         ] {
             assert!(!is_valid_timestamp(value), "{value}");
             assert_eq!(date_only(value), None);
+        }
+    }
+
+    #[test]
+    fn validates_strict_calendar_dates_and_leap_days() {
+        for value in ["2024-02-29", "2026-11-27", "2000-02-29"] {
+            assert!(is_valid_calendar_date(value), "{value}");
+        }
+        for value in [
+            "2023-02-29",
+            "1900-02-29",
+            "2026-02-30",
+            "2026-13-01",
+            "2026-1-01",
+            "2026-01-1",
+            "2026-01-01T12:00:00",
+            " 2026-01-01",
+            "2026-01-01 ",
+            "=2026-01-01",
+        ] {
+            assert!(!is_valid_calendar_date(value), "{value}");
         }
     }
 

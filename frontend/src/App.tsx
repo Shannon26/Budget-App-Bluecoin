@@ -9,6 +9,7 @@ import { useOverviewForms } from "./features/overview/useOverviewForms";
 
 const emptyState: BudgetState = {
   accounts: [],
+  account_types: [],
   totals: { income_minor: 0, expense_minor: 0 },
   categories: [],
   category_totals: [],
@@ -125,6 +126,7 @@ export default function App() {
             loading={loading}
             refresh={refresh}
             forms={overviewForms}
+            onMessage={onMessage}
             onAccountHistory={(accountId) => {
               setHistoryAccountId(accountId);
               setActiveTab("ledger");

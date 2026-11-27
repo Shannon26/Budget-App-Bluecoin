@@ -1,4 +1,6 @@
-use super::{AccountWithBalance, Category, CategoryTotal, LedgerEntry, SavedFilter};
+use super::{
+    AccountTypeDefinition, AccountWithBalance, Category, CategoryTotal, LedgerEntry, SavedFilter,
+};
 use serde::Serialize;
 use sqlx::FromRow;
 
@@ -11,6 +13,7 @@ pub struct Totals {
 #[derive(Debug, Clone, Serialize)]
 pub struct StateResponse {
     pub accounts: Vec<AccountWithBalance>,
+    pub account_types: Vec<AccountTypeDefinition>,
     pub totals: Totals,
     pub categories: Vec<Category>,
     pub category_totals: Vec<CategoryTotal>,

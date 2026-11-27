@@ -2,6 +2,12 @@ import { useMemo } from "react";
 import { formatMinor } from "../../shared/money";
 import type { BudgetState } from "../../shared/types";
 import AccountForm from "../accounts/AccountForm";
+import AccountTypeEditor from "../accounts/AccountTypeEditor";
+import {
+  accountGroupLabel,
+  accountTypeDefinition,
+  isAccountSelectable,
+} from "../accounts/accountClassification";
 import TransactionForm from "../ledger/TransactionForm";
 import TransferForm from "../transfers/TransferForm";
 import { activityDetails } from "./activity";
@@ -12,6 +18,7 @@ interface OverviewProps {
   loading: boolean;
   refresh: () => Promise<void>;
   forms: OverviewForms;
+  onMessage: (message: string, error?: boolean) => void;
   onAccountHistory: (accountId: number) => void;
   onOpenLedger: () => void;
   onOpenCategories: () => void;
@@ -31,12 +38,17 @@ export default function Overview({
   loading,
   refresh,
   forms,
+  onMessage,
   onAccountHistory,
   onOpenLedger,
   onOpenCategories,
 }: OverviewProps) {
   const totalBalance = useMemo(
     () => data.accounts.reduce((sum, account) => sum + account.balance_minor, 0),
+    [data.accounts],
+  );
+  const selectableAccounts = useMemo(
+    () => data.accounts.filter(isAccountSelectable),
     [data.accounts],
   );
   const categorySpotlight = useMemo(
@@ -108,42 +120,88 @@ export default function Overview({
             </div>
           ) : (
             <div className="account-grid">
-              {data.accounts.map((account) => (
-                <article
-                  className="account-card"
-                  key={account.id}
-                  data-testid={`account-${account.id}`}
-                  data-account-name={account.name}
-                >
-                  <div className="account-card-top">
-                    <span className={`account-avatar avatar-${account.id % 4}`}>
-                      {initials(account.name)}
-                    </span>
-                    <span className="currency-chip">{account.currency}</span>
-                  </div>
-                  <h3>{account.name}</h3>
-                  <p className="account-balance" data-testid="account-balance">
-                    {formatMinor(account.balance_minor, account.currency)}
-                  </p>
-                  <small>
-                    Opened with {formatMinor(account.opening_balance_minor, account.currency)}
-                  </small>
-                  <button
-                    className="text-button account-history-button"
-                    data-testid={`account-history-${account.id}`}
-                    type="button"
-                    onClick={() => onAccountHistory(account.id)}
+              {data.accounts.map((account) => {
+                const definition = accountTypeDefinition(data.account_types, account.account_type);
+                return (
+                  <article
+                    className="account-card"
+                    key={account.id}
+                    data-testid={`account-${account.id}`}
+                    data-account-name={account.name}
                   >
-                    View history →
-                  </button>
-                </article>
-              ))}
+                    <div className="account-card-top">
+                      <span className={`account-avatar avatar-${account.id % 4}`}>
+                        {initials(account.name)}
+                      </span>
+                      <span className="currency-chip">{account.currency}</span>
+                    </div>
+                    <h3>{account.name}</h3>
+                    <div
+                      className="account-classification"
+                      data-testid={`account-classification-${account.id}`}
+                    >
+                      <span className="account-type-chip">{definition.label}</span>
+                      <span className="account-group-chip">
+                        {accountGroupLabel(account.account_group)}
+                      </span>
+                    </div>
+                    <p className="account-balance" data-testid="account-balance">
+                      {formatMinor(account.balance_minor, account.currency)}
+                    </p>
+                    <small>
+                      Opened with {formatMinor(account.opening_balance_minor, account.currency)}
+                    </small>
+                    <small data-testid={`account-opening-date-${account.id}`}>
+                      Opening date: {account.opening_date || "Not set"}
+                    </small>
+                    {account.note && (
+                      <p className="account-note" data-testid={`account-note-${account.id}`}>
+                        {account.note}
+                      </p>
+                    )}
+                    {(account.hide_from_selection || account.hide_from_reports) && (
+                      <div
+                        className="account-visibility"
+                        data-testid={`account-visibility-${account.id}`}
+                      >
+                        {(account.hide_from_selection || account.hide_from_reports) && (
+                          <span>Hidden from new pickers</span>
+                        )}
+                        {account.hide_from_reports && <span>Hidden from future reports</span>}
+                      </div>
+                    )}
+                    <div className="account-card-actions">
+                      <AccountTypeEditor
+                        account={account}
+                        definitions={data.account_types}
+                        refresh={refresh}
+                        onMessage={onMessage}
+                      />
+                      <button
+                        className="text-button account-history-button"
+                        data-testid={`account-history-${account.id}`}
+                        type="button"
+                        onClick={() => onAccountHistory(account.id)}
+                      >
+                        View history →
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
 
         <AccountForm forms={forms} />
       </div>
+
+      {data.accounts.length > 0 && selectableAccounts.length === 0 && (
+        <div className="message account-picker-empty" role="status">
+          <span>i</span>
+          All accounts are hidden from new entries. Edit an account to make one selectable.
+        </div>
+      )}
 
       <div className="workspace-grid">
         <TransactionForm data={data} forms={forms} />

@@ -78,7 +78,8 @@ impl Store {
         E: Executor<'e, Database = Sqlite>,
     {
         sqlx::query_as::<_, Account>(
-            "SELECT id, name, currency, opening_balance_minor, created_at
+            "SELECT id, name, currency, opening_balance_minor, created_at, account_type,
+                    note, opening_date, hide_from_selection, hide_from_reports
              FROM accounts WHERE id = ?",
         )
         .bind(account_id)
@@ -90,6 +91,8 @@ impl Store {
     pub async fn state(&self) -> AppResult<StateResponse> {
         let accounts = sqlx::query_as::<_, AccountWithBalance>(
             "SELECT a.id, a.name, a.currency, a.opening_balance_minor, a.created_at,
+                    a.account_type, a.note, a.opening_date,
+                    a.hide_from_selection, a.hide_from_reports,
                     COALESCE(
                         a.opening_balance_minor + SUM(
                             CASE e.kind
@@ -130,6 +133,7 @@ impl Store {
 
         Ok(StateResponse {
             accounts,
+            account_types: ACCOUNT_TYPES.to_vec(),
             totals,
             categories,
             category_totals,

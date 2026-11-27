@@ -1,13 +1,39 @@
 export type TransactionKind = "income" | "expense";
 export type EntryKind = TransactionKind | "transfer" | "transfer_in" | "transfer_out";
 
-export interface Account {
+export type AccountGroup = "asset" | "liability" | "unclassified";
+
+export interface AccountTypeDefinition {
+  value: string;
+  label: string;
+  group: AccountGroup;
+}
+
+export interface AccountMetadata {
   id: number;
   name: string;
   currency: string;
   opening_balance_minor: number;
   created_at: string;
+  note: string;
+  opening_date: string | null;
+  hide_from_selection: boolean;
+  hide_from_reports: boolean;
+  account_type: string;
+  account_group: AccountGroup;
+}
+
+export interface Account extends AccountMetadata {
   balance_minor: number;
+}
+
+export interface AccountUpdate {
+  name?: string;
+  note?: string | null;
+  opening_date?: string | null;
+  account_type?: string;
+  hide_from_selection?: boolean;
+  hide_from_reports?: boolean;
 }
 
 export interface Totals {
@@ -115,6 +141,7 @@ export interface SavedFilter {
 
 export interface BudgetState {
   accounts: Account[];
+  account_types: AccountTypeDefinition[];
   totals: Totals;
   categories: Category[];
   category_totals: CategoryTotal[];

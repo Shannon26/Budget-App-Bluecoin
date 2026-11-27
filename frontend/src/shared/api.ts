@@ -1,4 +1,6 @@
 import type {
+  AccountMetadata,
+  AccountUpdate,
   BudgetState,
   Category,
   FilterDefinition,
@@ -62,10 +64,25 @@ export const api = {
     name: string;
     currency: string;
     opening_balance_minor: number;
+    account_type?: string;
+    note?: string | null;
+    opening_date?: string | null;
+    hide_from_selection?: boolean;
+    hide_from_reports?: boolean;
   }) =>
-    request<{ id: number }>("/accounts", {
+    request<AccountMetadata>("/accounts", {
       method: "POST",
       body: JSON.stringify(input),
+    }),
+  updateAccount: (id: number, input: AccountUpdate) =>
+    request<AccountMetadata>(`/accounts/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  updateAccountType: (id: number, accountType: string) =>
+    request<AccountMetadata>(`/accounts/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ account_type: accountType }),
     }),
   accountHistory: (accountId: number, offset = 0) =>
     request<LedgerPage>(`/accounts/${accountId}/history?limit=200&offset=${offset}`),

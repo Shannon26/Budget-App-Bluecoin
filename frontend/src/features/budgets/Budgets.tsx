@@ -188,14 +188,28 @@ export default function Budgets({ onMessage }: { onMessage: (message: string, er
         <article className="budget-summary-card">
           <p>Monthly spending</p>
           <strong data-testid="budget-total-spent">
-            {formatMinor(visibleResult?.total_spent_minor ?? 0)}
+            {loading
+              ? "Pending…"
+              : visibleResult
+                ? formatMinor(visibleResult.total_spent_minor)
+                : "Unavailable"}
           </strong>
-          <span>{visibleResult?.expense_count ?? 0} expenses · income and transfers excluded</span>
+          <span data-testid="budget-expense-count">
+            {loading
+              ? "Expense count pending"
+              : visibleResult
+                ? `${visibleResult.expense_count} expenses · income and transfers excluded`
+                : "Expense count unavailable"}
+          </span>
         </article>
         <article className="budget-summary-card">
           <p>Uncategorized spending</p>
           <strong data-testid="budget-uncategorized-spent">
-            {formatMinor(visibleResult?.uncategorized_spent_minor ?? 0)}
+            {loading
+              ? "Pending…"
+              : visibleResult
+                ? formatMinor(visibleResult.uncategorized_spent_minor)
+                : "Unavailable"}
           </strong>
           <span>Included in monthly spending, not in category rollups</span>
         </article>

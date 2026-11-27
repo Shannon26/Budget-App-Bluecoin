@@ -38,6 +38,10 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             get(routes::accounts::account_history),
         )
         .route(
+            "/api/accounts/:id",
+            axum::routing::put(routes::accounts::update_account),
+        )
+        .route(
             "/api/transactions",
             post(routes::transactions::create_transaction),
         )

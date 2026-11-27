@@ -47,3 +47,101 @@
   color: #a25333;
 }
 
+.account-classification {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 14px;
+}
+
+.account-type-chip,
+.account-group-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.account-type-chip {
+  color: #285c4b;
+  background: #e2eee5;
+}
+
+.account-group-chip {
+  border: 1px solid #dfe3d9;
+  color: #718078;
+  background: #fffdf7;
+}
+
+.account-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.account-type-editor {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e1e4da;
+}
+
+.account-type-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.account-type-actions .primary-button {
+  width: auto;
+  min-width: 110px;
+  padding: 0 16px;
+}
+
+.account-type-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-card > small {
+  display: block;
+  margin-top: 4px;
+}
+
+.account-note {
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.account-visibility {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.account-visibility span {
+  padding: 4px 7px;
+  border: 1px solid #ead9bd;
+  border-radius: 999px;
+  color: #805d2d;
+  background: #fff5df;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.account-picker-empty {
+  margin-top: 20px;
+}
+

@@ -1,4 +1,5 @@
 import type { BudgetState } from "../../shared/types";
+import { isAccountSelectable } from "../accounts/accountClassification";
 import type { OverviewForms } from "../overview/useOverviewForms";
 
 export default function TransferForm({
@@ -8,6 +9,8 @@ export default function TransferForm({
   data: BudgetState;
   forms: OverviewForms;
 }) {
+  const selectableAccounts = data.accounts.filter(isAccountSelectable);
+
   return (
     <section className="panel form-panel transfer-panel">
       <div className="panel-heading">
@@ -35,10 +38,12 @@ export default function TransferForm({
               value={forms.transferFrom}
               onChange={(event) => forms.setTransferFrom(event.target.value)}
               required
-              disabled={data.accounts.length === 0}
+              disabled={selectableAccounts.length === 0}
             >
-              {data.accounts.length === 0 && <option value="">No accounts yet</option>}
-              {data.accounts.map((account) => (
+              <option value="">
+                {selectableAccounts.length === 0 ? "No selectable accounts" : "Choose an account"}
+              </option>
+              {selectableAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name}
                 </option>
@@ -52,10 +57,12 @@ export default function TransferForm({
               value={forms.transferTo}
               onChange={(event) => forms.setTransferTo(event.target.value)}
               required
-              disabled={data.accounts.length < 2}
+              disabled={selectableAccounts.length < 2}
             >
-              {data.accounts.length < 2 && <option value="">Add two accounts first</option>}
-              {data.accounts.map((account) => (
+              <option value="">
+                {selectableAccounts.length < 2 ? "Need two selectable accounts" : "Choose another account"}
+              </option>
+              {selectableAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name}
                 </option>
@@ -106,7 +113,7 @@ export default function TransferForm({
         <button
           className="primary-button transfer-button"
           data-testid="submit-transfer"
-          disabled={forms.submitting || data.accounts.length < 2}
+          disabled={forms.submitting || selectableAccounts.length < 2}
         >
           {forms.submitting ? "Moving…" : "Complete transfer"}
         </button>

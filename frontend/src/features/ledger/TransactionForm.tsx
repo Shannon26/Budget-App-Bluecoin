@@ -1,4 +1,5 @@
 import type { BudgetState } from "../../shared/types";
+import { isAccountSelectable } from "../accounts/accountClassification";
 import type { OverviewForms } from "../overview/useOverviewForms";
 
 export default function TransactionForm({
@@ -8,6 +9,8 @@ export default function TransactionForm({
   data: BudgetState;
   forms: OverviewForms;
 }) {
+  const selectableAccounts = data.accounts.filter(isAccountSelectable);
+
   return (
     <section className="panel form-panel">
       <div className="panel-heading">
@@ -56,10 +59,12 @@ export default function TransactionForm({
             value={forms.transactionAccountId}
             onChange={(event) => forms.setTransactionAccountId(event.target.value)}
             required
-            disabled={data.accounts.length === 0}
+            disabled={selectableAccounts.length === 0}
           >
-            {data.accounts.length === 0 && <option value="">Create an account first</option>}
-            {data.accounts.map((account) => (
+            <option value="">
+              {selectableAccounts.length === 0 ? "No selectable accounts" : "Choose an account"}
+            </option>
+            {selectableAccounts.map((account) => (
               <option key={account.id} value={account.id}>
                 {account.name} · {account.currency}
               </option>
@@ -123,7 +128,7 @@ export default function TransactionForm({
         </label>
         <button
           className={`primary-button ${forms.transactionKind === "income" ? "income-button" : ""}`}
-          disabled={forms.submitting || data.accounts.length === 0}
+          disabled={forms.submitting || selectableAccounts.length === 0}
         >
           {forms.submitting
             ? "Saving…"

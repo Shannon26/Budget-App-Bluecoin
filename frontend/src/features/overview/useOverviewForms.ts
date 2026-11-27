@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../shared/api";
 import { dateTimeValue, localDateValue } from "../../shared/date";
 import { parseMinorUnits } from "../../shared/money";
-import type { BudgetState, TransactionKind } from "../../shared/types";
+import type { Account, BudgetState, TransactionKind } from "../../shared/types";
+import { isAccountSelectable } from "../accounts/accountClassification";
+
+interface SelectionState {
+  initialized: boolean;
+}
 
 export function useOverviewForms(
   data: BudgetState,
@@ -12,11 +17,21 @@ export function useOverviewForms(
   const [submitting, setSubmitting] = useState(false);
 
   const [accountName, setAccountName] = useState("");
+  const [accountType, setAccountType] = useState("unclassified");
+  const [accountNote, setAccountNote] = useState("");
+  const [accountOpeningDate, setAccountOpeningDate] = useState("");
+  const [accountHideFromSelection, setAccountHideFromSelection] = useState(false);
+  const [accountHideFromReports, setAccountHideFromReports] = useState(false);
   const [openingBalance, setOpeningBalance] = useState("");
 
   const [transactionKind, setTransactionKind] = useState<TransactionKind>("expense");
   const [transactionName, setTransactionName] = useState("");
-  const [transactionAccountId, setTransactionAccountId] = useState("");
+  const [transactionAccountId, setTransactionAccountIdState] = useState("");
+  const transactionAccountSelection = useRef<SelectionState>({ initialized: false });
+  const setTransactionAccountId = useCallback((value: string) => {
+    transactionAccountSelection.current.initialized = true;
+    setTransactionAccountIdState(value);
+  }, []);
   const [transactionCategoryId, setTransactionCategoryId] = useState("");
   const [transactionAmount, setTransactionAmount] = useState("");
   const [transactionNote, setTransactionNote] = useState("");
@@ -24,20 +39,73 @@ export function useOverviewForms(
   const [transactionReconciled, setTransactionReconciled] = useState(false);
 
   const [transferName, setTransferName] = useState("");
-  const [transferFrom, setTransferFrom] = useState("");
-  const [transferTo, setTransferTo] = useState("");
+  const [transferFrom, setTransferFromState] = useState("");
+  const transferFromSelection = useRef<SelectionState>({ initialized: false });
+  const setTransferFrom = useCallback((value: string) => {
+    transferFromSelection.current.initialized = true;
+    setTransferFromState(value);
+  }, []);
+  const [transferTo, setTransferToState] = useState("");
+  const transferToSelection = useRef<SelectionState>({ initialized: false });
+  const setTransferTo = useCallback((value: string) => {
+    transferToSelection.current.initialized = true;
+    setTransferToState(value);
+  }, []);
   const [transferAmount, setTransferAmount] = useState("");
   const [transferNote, setTransferNote] = useState("");
   const [transferDate, setTransferDate] = useState(localDateValue());
   const [transferReconciled, setTransferReconciled] = useState(false);
 
+  const selectableAccounts = useMemo(
+    () => data.accounts.filter(isAccountSelectable),
+    [data.accounts],
+  );
+
   useEffect(() => {
-    setTransactionAccountId((current) => current || `${data.accounts[0]?.id ?? ""}`);
-    setTransferFrom((current) => current || `${data.accounts[0]?.id ?? ""}`);
-    setTransferTo(
-      (current) => current || `${data.accounts[1]?.id ?? data.accounts[0]?.id ?? ""}`,
+    if (transactionAccountId) {
+      transactionAccountSelection.current.initialized = true;
+      if (!selectableAccounts.some((account) => `${account.id}` === transactionAccountId)) {
+        setTransactionAccountIdState("");
+      }
+      return;
+    }
+    if (transactionAccountSelection.current.initialized || selectableAccounts.length === 0) return;
+    transactionAccountSelection.current.initialized = true;
+    setTransactionAccountIdState(`${selectableAccounts[0].id}`);
+  }, [selectableAccounts, transactionAccountId]);
+
+  useEffect(() => {
+    if (transferFrom) {
+      transferFromSelection.current.initialized = true;
+      if (!selectableAccounts.some((account) => `${account.id}` === transferFrom)) {
+        setTransferFromState("");
+      }
+      return;
+    }
+    if (transferFromSelection.current.initialized || selectableAccounts.length === 0) return;
+    transferFromSelection.current.initialized = true;
+    setTransferFromState(`${selectableAccounts[0].id}`);
+  }, [selectableAccounts, transferFrom]);
+
+  useEffect(() => {
+    if (transferTo) {
+      transferToSelection.current.initialized = true;
+      if (!selectableAccounts.some((account) => `${account.id}` === transferTo)) {
+        setTransferToState("");
+        return;
+      }
+      return;
+    } else if (transferToSelection.current.initialized || !transferFrom) {
+      return;
+    }
+
+    const alternative = selectableAccounts.find(
+      (account) => `${account.id}` !== transferFrom,
     );
-  }, [data.accounts]);
+    if (!alternative) return;
+    transferToSelection.current.initialized = true;
+    setTransferToState(`${alternative.id}`);
+  }, [selectableAccounts, transferFrom, transferTo]);
 
   const transactionCategories = useMemo(
     () =>
@@ -59,8 +127,18 @@ export function useOverviewForms(
         name: accountName,
         currency: "INR",
         opening_balance_minor: openingMinor,
+        account_type: accountType,
+        note: accountNote.trim() ? accountNote : null,
+        opening_date: accountOpeningDate || null,
+        hide_from_selection: accountHideFromSelection || accountHideFromReports,
+        hide_from_reports: accountHideFromReports,
       });
       setAccountName("");
+      setAccountType("unclassified");
+      setAccountNote("");
+      setAccountOpeningDate("");
+      setAccountHideFromSelection(false);
+      setAccountHideFromReports(false);
       setOpeningBalance("");
       onMessage("Account created. Its opening balance is now part of the ledger.");
       await refresh();
@@ -141,6 +219,17 @@ export function useOverviewForms(
     submitting,
     accountName,
     setAccountName,
+    accountType,
+    setAccountType,
+    accountTypes: data.account_types,
+    accountNote,
+    setAccountNote,
+    accountOpeningDate,
+    setAccountOpeningDate,
+    accountHideFromSelection,
+    setAccountHideFromSelection,
+    accountHideFromReports,
+    setAccountHideFromReports,
     openingBalance,
     setOpeningBalance,
     handleCreateAccount,
