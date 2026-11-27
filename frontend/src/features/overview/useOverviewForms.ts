@@ -9,6 +9,23 @@ interface SelectionState {
   initialized: boolean;
 }
 
+const UNNAMED_TRANSACTION_NAME_KEY = "paisa.unnamedTransactionName";
+
+function readUnnamedTransactionName(): string {
+  try {
+    return typeof window === "undefined"
+      ? ""
+      : window.localStorage.getItem(UNNAMED_TRANSACTION_NAME_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function resolveTransactionName(name: string, preferredName: string): string {
+  if (name.trim()) return name;
+  return preferredName.trim() ? preferredName : name;
+}
+
 function optionalDay(value: string, label: string): number | null {
   if (!value) return null;
   const day = Number(value);
@@ -38,6 +55,21 @@ export function useOverviewForms(
 
   const [transactionKind, setTransactionKind] = useState<TransactionKind>("expense");
   const [transactionName, setTransactionName] = useState("");
+  const [unnamedTransactionName, setUnnamedTransactionNameState] = useState(
+    readUnnamedTransactionName,
+  );
+  const setUnnamedTransactionName = useCallback((value: string) => {
+    setUnnamedTransactionNameState(value);
+    try {
+      if (value) {
+        window.localStorage.setItem(UNNAMED_TRANSACTION_NAME_KEY, value);
+      } else {
+        window.localStorage.removeItem(UNNAMED_TRANSACTION_NAME_KEY);
+      }
+    } catch {
+      // The controlled in-session preference remains usable when storage is unavailable.
+    }
+  }, []);
   const [transactionAccountId, setTransactionAccountIdState] = useState("");
   const transactionAccountSelection = useRef<SelectionState>({ initialized: false });
   const setTransactionAccountId = useCallback((value: string) => {
@@ -216,7 +248,7 @@ export function useOverviewForms(
         kind: transactionKind,
         account_id: Number(transactionAccountId),
         amount_minor: amountMinor,
-        name: transactionName,
+        name: resolveTransactionName(transactionName, unnamedTransactionName),
         category_id: transactionCategoryId ? Number(transactionCategoryId) : null,
         reconciled: transactionReconciled,
         note: transactionNote,
@@ -300,6 +332,8 @@ export function useOverviewForms(
     setTransactionKind,
     transactionName,
     setTransactionName,
+    unnamedTransactionName,
+    setUnnamedTransactionName,
     transactionAccountId,
     setTransactionAccountId,
     transactionCategoryId,
