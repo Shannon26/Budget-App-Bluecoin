@@ -21,6 +21,9 @@ export interface AccountMetadata {
   hide_from_reports: boolean;
   account_type: string;
   account_group: AccountGroup;
+  credit_limit_minor: number | null;
+  cutoff_day: number | null;
+  due_day: number | null;
 }
 
 export interface Account extends AccountMetadata {
@@ -34,6 +37,54 @@ export interface AccountUpdate {
   account_type?: string;
   hide_from_selection?: boolean;
   hide_from_reports?: boolean;
+  credit_limit_minor?: number | null;
+  cutoff_day?: number | null;
+  due_day?: number | null;
+}
+
+export interface ReportPeriod {
+  start_date: string;
+  end_date_exclusive: string;
+  income_minor: number;
+  expense_minor: number;
+  net_minor: number;
+  income_count: number;
+  expense_count: number;
+}
+
+export interface ReportMetricValues {
+  direct_minor: number;
+  rollup_minor: number;
+  direct_count: number;
+  rollup_count: number;
+}
+
+export interface ReportCategoryPeriodValues {
+  income: ReportMetricValues;
+  expense: ReportMetricValues;
+}
+
+export interface ReportCategory {
+  category_id: number | null;
+  name: string;
+  kind: string;
+  parent_id: number | null;
+  parent_name: string | null;
+  color: string;
+  icon: string;
+  sort_order: number;
+  archived_at: string | null;
+  current: ReportCategoryPeriodValues;
+  prior: ReportCategoryPeriodValues;
+}
+
+export interface NetEarningsReport {
+  month: string;
+  prior_month: string;
+  current: ReportPeriod;
+  prior: ReportPeriod;
+  invalid_date_entry_count: number;
+  categories: ReportCategory[];
 }
 
 export interface Totals {

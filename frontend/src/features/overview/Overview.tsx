@@ -148,12 +148,38 @@ export default function Overview({
                     <p className="account-balance" data-testid="account-balance">
                       {formatMinor(account.balance_minor, account.currency)}
                     </p>
+                    {account.account_type === "credit_card" && (
+                      <small data-testid={`account-balance-state-${account.id}`}>
+                        Latest balance ·{" "}
+                        {account.balance_minor < 0
+                          ? "Amount owed"
+                          : account.balance_minor > 0
+                            ? "Credit balance"
+                            : "Settled"}
+                      </small>
+                    )}
                     <small>
                       Opened with {formatMinor(account.opening_balance_minor, account.currency)}
                     </small>
                     <small data-testid={`account-opening-date-${account.id}`}>
                       Opening date: {account.opening_date || "Not set"}
                     </small>
+                    {account.account_type === "credit_card" && (
+                      <>
+                        <small data-testid={`account-credit-limit-${account.id}`}>
+                          Credit limit:{" "}
+                          {account.credit_limit_minor === null
+                            ? "Not set"
+                            : formatMinor(account.credit_limit_minor, account.currency)}
+                        </small>
+                        <small data-testid={`account-cutoff-day-${account.id}`}>
+                          Cutoff day: {account.cutoff_day === null ? "Not set" : account.cutoff_day}
+                        </small>
+                        <small data-testid={`account-due-day-${account.id}`}>
+                          Due day: {account.due_day === null ? "Not set" : account.due_day}
+                        </small>
+                      </>
+                    )}
                     {account.note && (
                       <p className="account-note" data-testid={`account-note-${account.id}`}>
                         {account.note}

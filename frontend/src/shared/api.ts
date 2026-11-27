@@ -7,6 +7,7 @@ import type {
   LedgerEntry,
   LedgerPage,
   MonthlyCategoryBudgets,
+  NetEarningsReport,
   SavedFilter,
   TransactionKind,
 } from "./types";
@@ -60,6 +61,8 @@ async function downloadCsv(path: string): Promise<Blob> {
 
 export const api = {
   state: () => request<BudgetState>("/state"),
+  netEarnings: (month: string) =>
+    request<NetEarningsReport>(`/reports/net-earnings?month=${encodeURIComponent(month)}`),
   createAccount: (input: {
     name: string;
     currency: string;
@@ -69,6 +72,9 @@ export const api = {
     opening_date?: string | null;
     hide_from_selection?: boolean;
     hide_from_reports?: boolean;
+    credit_limit_minor?: number | null;
+    cutoff_day?: number | null;
+    due_day?: number | null;
   }) =>
     request<AccountMetadata>("/accounts", {
       method: "POST",

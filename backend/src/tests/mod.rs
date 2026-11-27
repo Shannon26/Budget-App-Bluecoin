@@ -249,5 +249,6 @@ mod categories;
 mod csv_export;
 mod filters;
 mod ledger;
+mod reports;
 mod transactions;
 mod transfers;

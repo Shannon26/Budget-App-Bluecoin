@@ -97,6 +97,10 @@ async fn setup_populated_database_before_migration(
             "005_account_types.sql",
             include_str!("../../migrations/005_account_types.sql"),
         ),
+        (
+            "006_account_metadata.sql",
+            include_str!("../../migrations/006_account_metadata.sql"),
+        ),
     ]
     .into_iter()
     .take(last_migration)
@@ -142,6 +146,10 @@ async fn setup_populated_pre_account_type_database() -> (Router, SqlitePool, Tem
 
 async fn setup_populated_pre_account_metadata_database() -> (Router, SqlitePool, TempDir) {
     setup_populated_database_before_migration(5).await
+}
+
+async fn setup_populated_pre_card_metadata_database() -> (Router, SqlitePool, TempDir) {
+    setup_populated_database_before_migration(6).await
 }
 
 #[tokio::test]
@@ -816,4 +824,276 @@ async fn metadata_edits_and_hide_flags_preserve_balances_history_and_posted_date
             .await
             .unwrap();
     assert_eq!(stored_entry_date, "2026-02-02T12:00:00Z");
+}
+
+#[tokio::test]
+async fn populated_pre_card_migration_preserves_data_and_adds_null_card_fields() {
+    let (app, _pool, _directory) = setup_populated_pre_card_metadata_database().await;
+    let current = state(&app).await;
+    assert_eq!(current["accounts"].as_array().unwrap().len(), 2);
+    for account in current["accounts"].as_array().unwrap() {
+        assert_eq!(account["credit_limit_minor"], Value::Null);
+        assert_eq!(account["cutoff_day"], Value::Null);
+        assert_eq!(account["due_day"], Value::Null);
+    }
+    assert_eq!(current["accounts"][0]["id"], 41);
+    assert_eq!(current["accounts"][0]["balance_minor"], 87_500);
+    assert_eq!(current["accounts"][1]["id"], 42);
+    assert_eq!(current["accounts"][1]["balance_minor"], 65_000);
+    assert_eq!(current["totals"]["income_minor"], 5_000);
+    assert_eq!(current["totals"]["expense_minor"], 2_500);
+    let (status, history) = send_json(
+        &app,
+        "GET",
+        "/api/accounts/41/history?limit=200&offset=0",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert_eq!(history["total_count"], 2);
+}
+
+#[tokio::test]
+async fn card_metadata_round_trips_clears_validates_and_survives_retyping() {
+    let (app, pool, _directory) = setup().await;
+    let (status, created) = send_json(
+        &app,
+        "POST",
+        "/api/accounts",
+        json!({
+            "name": "Card",
+            "currency": "INR",
+            "opening_balance_minor": 0,
+            "account_type": "credit_card",
+            "credit_limit_minor": 1_400_000,
+            "cutoff_day": 18,
+            "due_day": 2,
+            "hide_from_reports": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_i64().unwrap();
+    assert_eq!(created["credit_limit_minor"], 1_400_000);
+    assert_eq!(created["cutoff_day"], 18);
+    assert_eq!(created["due_day"], 2);
+    assert_eq!(created["hide_from_reports"], true);
+
+    let (status, updated) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{id}"),
+        json!({ "cutoff_day": 20 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["credit_limit_minor"], 1_400_000);
+    assert_eq!(updated["cutoff_day"], 20);
+    assert_eq!(updated["due_day"], 2);
+    assert_eq!(updated["hide_from_reports"], true);
+
+    let (status, updated) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{id}"),
+        json!({ "credit_limit_minor": null, "cutoff_day": null, "due_day": null }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["credit_limit_minor"], Value::Null);
+    assert_eq!(updated["cutoff_day"], Value::Null);
+    assert_eq!(updated["due_day"], Value::Null);
+
+    let (status, updated) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{id}"),
+        json!({ "credit_limit_minor": 1_400_000, "cutoff_day": 18, "due_day": 2 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    let (status, updated) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{id}"),
+        json!({ "account_type": "checking" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["credit_limit_minor"], Value::Null);
+    assert_eq!(updated["cutoff_day"], Value::Null);
+    assert_eq!(updated["due_day"], Value::Null);
+    let retained: (Option<i64>, Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT credit_limit_minor, cutoff_day, due_day FROM accounts WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(retained, (Some(1_400_000), Some(18), Some(2)));
+
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{id}"),
+        json!({ "credit_limit_minor": 2_000_000 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, updated) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{id}"),
+        json!({ "account_type": "credit_card" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["credit_limit_minor"], 1_400_000);
+    assert_eq!(updated["cutoff_day"], 18);
+    assert_eq!(updated["due_day"], 2);
+    assert_eq!(updated["hide_from_reports"], true);
+
+    for invalid in [
+        json!({ "credit_limit_minor": 0 }),
+        json!({ "credit_limit_minor": -1 }),
+        json!({ "cutoff_day": 0 }),
+        json!({ "cutoff_day": 32 }),
+        json!({ "due_day": 0 }),
+        json!({ "due_day": 32 }),
+    ] {
+        let (status, body) = send_json(&app, "PUT", &format!("/api/accounts/{id}"), invalid).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/accounts",
+        json!({
+            "name": "Non-card with card fields",
+            "currency": "INR",
+            "opening_balance_minor": 0,
+            "account_type": "cash",
+            "credit_limit_minor": 1
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, old_client) = send_json(
+        &app,
+        "POST",
+        "/api/accounts",
+        json!({ "name": "Old card client", "currency": "INR", "opening_balance_minor": 0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{old_client}");
+    assert_eq!(old_client["credit_limit_minor"], Value::Null);
+    assert_eq!(old_client["cutoff_day"], Value::Null);
+    assert_eq!(old_client["due_day"], Value::Null);
+}
+
+#[tokio::test]
+async fn card_purchase_and_payment_keep_signed_balances_and_totals() {
+    let (app, pool, _directory) = setup().await;
+    let (status, card) = send_json(
+        &app,
+        "POST",
+        "/api/accounts",
+        json!({
+            "name": "Purchase card",
+            "currency": "INR",
+            "opening_balance_minor": 0,
+            "account_type": "credit_card"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{card}");
+    let card_id = card["id"].as_i64().unwrap();
+    let bank_id = create_account(&app, "Payment bank", 100_000).await;
+    let purchase_id = create_entry(&app, "expense", card_id, 16_612, "Card purchase", None).await;
+    let after_purchase = state(&app).await;
+    assert_eq!(after_purchase["accounts"][0]["balance_minor"], -16_612);
+    assert_eq!(after_purchase["totals"]["expense_minor"], 16_612);
+    assert_eq!(after_purchase["totals"]["income_minor"], 0);
+
+    let (status, body) = transfer(&app, bank_id, card_id, 10_000).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let after_payment = state(&app).await;
+    assert_eq!(after_payment["accounts"][0]["balance_minor"], -6_612);
+    assert_eq!(after_payment["accounts"][1]["balance_minor"], 90_000);
+    assert_eq!(after_payment["totals"]["expense_minor"], 16_612);
+    assert_eq!(after_payment["totals"]["income_minor"], 0);
+
+    let purchase: (i64, String, String) =
+        sqlx::query_as("SELECT amount_minor, note, occurred_at FROM entries WHERE id = ?")
+            .bind(purchase_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(purchase.0, 16_612);
+    assert_eq!(purchase.1, "Card purchase");
+    assert!(!purchase.2.is_empty());
+
+    let (status, body) = transfer(&app, bank_id, card_id, 6_612).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let settled = state(&app).await;
+    assert_eq!(settled["accounts"][0]["balance_minor"], 0);
+    let (status, body) = transfer(&app, bank_id, card_id, 1_000).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let credit = state(&app).await;
+    assert_eq!(credit["accounts"][0]["balance_minor"], 1_000);
+    assert_eq!(credit["totals"]["expense_minor"], 16_612);
+    assert_eq!(credit["totals"]["income_minor"], 0);
+}
+
+#[tokio::test]
+async fn signed_balance_arithmetic_is_safe_at_i64_boundaries() {
+    let (app, _pool, _directory) = setup().await;
+    for (name, opening) in [("Maximum", i64::MAX), ("Minimum", i64::MIN)] {
+        let (status, body) = send_json(
+            &app,
+            "POST",
+            "/api/accounts",
+            json!({
+                "name": name,
+                "currency": "INR",
+                "opening_balance_minor": opening
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let current = state(&app).await;
+    assert_eq!(current["accounts"][0]["balance_minor"], i64::MAX);
+    assert_eq!(current["accounts"][1]["balance_minor"], i64::MIN);
+
+    let (overflow_app, _pool, _directory) = setup().await;
+    let (status, body) = send_json(
+        &overflow_app,
+        "POST",
+        "/api/accounts",
+        json!({
+            "name": "Overflow",
+            "currency": "INR",
+            "opening_balance_minor": i64::MAX
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_i64().unwrap();
+    let (status, body) = send_json(
+        &overflow_app,
+        "POST",
+        "/api/transactions",
+        json!({
+            "kind": "income",
+            "account_id": id,
+            "amount_minor": 1,
+            "name": "Boundary income"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = send_json(&overflow_app, "GET", "/api/state", json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("integer range"));
 }

@@ -9,6 +9,15 @@ interface SelectionState {
   initialized: boolean;
 }
 
+function optionalDay(value: string, label: string): number | null {
+  if (!value) return null;
+  const day = Number(value);
+  if (!Number.isInteger(day) || day < 1 || day > 31) {
+    throw new Error(`${label} must be between 1 and 31`);
+  }
+  return day;
+}
+
 export function useOverviewForms(
   data: BudgetState,
   refresh: () => Promise<void>,
@@ -22,6 +31,9 @@ export function useOverviewForms(
   const [accountOpeningDate, setAccountOpeningDate] = useState("");
   const [accountHideFromSelection, setAccountHideFromSelection] = useState(false);
   const [accountHideFromReports, setAccountHideFromReports] = useState(false);
+  const [accountCreditLimit, setAccountCreditLimit] = useState("");
+  const [accountCutoffDay, setAccountCutoffDay] = useState("");
+  const [accountDueDay, setAccountDueDay] = useState("");
   const [openingBalance, setOpeningBalance] = useState("");
 
   const [transactionKind, setTransactionKind] = useState<TransactionKind>("expense");
@@ -123,6 +135,25 @@ export function useOverviewForms(
     try {
       const openingMinor = parseMinorUnits(openingBalance || "0", true);
       if (openingMinor === null) throw new Error("Enter a valid opening balance");
+      const cardMetadata: {
+        credit_limit_minor?: number | null;
+        cutoff_day?: number | null;
+        due_day?: number | null;
+      } = {};
+      if (accountType === "credit_card") {
+        const creditLimit = accountCreditLimit.trim()
+          ? parseMinorUnits(accountCreditLimit)
+          : null;
+        if (creditLimit !== null && creditLimit <= 0) {
+          throw new Error("Credit limit must be greater than zero");
+        }
+        if (accountCreditLimit.trim() && creditLimit === null) {
+          throw new Error("Enter a valid credit limit");
+        }
+        cardMetadata.credit_limit_minor = creditLimit;
+        cardMetadata.cutoff_day = optionalDay(accountCutoffDay, "Cutoff day");
+        cardMetadata.due_day = optionalDay(accountDueDay, "Due day");
+      }
       await api.createAccount({
         name: accountName,
         currency: "INR",
@@ -132,6 +163,7 @@ export function useOverviewForms(
         opening_date: accountOpeningDate || null,
         hide_from_selection: accountHideFromSelection || accountHideFromReports,
         hide_from_reports: accountHideFromReports,
+        ...cardMetadata,
       });
       setAccountName("");
       setAccountType("unclassified");
@@ -139,6 +171,9 @@ export function useOverviewForms(
       setAccountOpeningDate("");
       setAccountHideFromSelection(false);
       setAccountHideFromReports(false);
+      setAccountCreditLimit("");
+      setAccountCutoffDay("");
+      setAccountDueDay("");
       setOpeningBalance("");
       onMessage("Account created. Its opening balance is now part of the ledger.");
       await refresh();
@@ -230,6 +265,12 @@ export function useOverviewForms(
     setAccountHideFromSelection,
     accountHideFromReports,
     setAccountHideFromReports,
+    accountCreditLimit,
+    setAccountCreditLimit,
+    accountCutoffDay,
+    setAccountCutoffDay,
+    accountDueDay,
+    setAccountDueDay,
     openingBalance,
     setOpeningBalance,
     handleCreateAccount,

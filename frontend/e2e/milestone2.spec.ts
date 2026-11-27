@@ -387,6 +387,217 @@ test("ledger and account history load older same-day entries with complete daily
   expect(new Set(historyIds).size).toBe(201);
 });
 
+test("ledger ignores superseded filter responses and stale errors", async ({ page, request }) => {
+  const accountIds: number[] = [];
+  for (const name of ["Race slow account", "Race fast account"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 0 },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [slowId, fastId] = accountIds;
+  for (const [accountId, name, amount] of [
+    [slowId, "Slow race one", 10000],
+    [slowId, "Slow race two", 20000],
+    [fastId, "Fast race item", 70000],
+  ] as const) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind: "expense",
+        account_id: accountId,
+        amount_minor: amount,
+        name,
+        occurred_at: "2026-11-20T12:00:00",
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+
+  await page.goto("/");
+  await page.getByTestId("nav-ledger").click();
+  const releases = [deferred(), deferred()];
+  const starts = [deferred(), deferred()];
+  const finishes = [deferred(), deferred()];
+  let call = 0;
+  await page.route("**/api/ledger?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.searchParams.get("account_id") !== String(slowId) ||
+      url.searchParams.get("offset") !== "0"
+    ) {
+      await route.continue();
+      return;
+    }
+    const index = call++;
+    starts[index].resolve();
+    const response = await route.fetch();
+    await releases[index].promise;
+    if (index === 1) {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Stale ledger failure" }),
+      });
+    } else {
+      await route.fulfill({ response });
+    }
+    finishes[index].resolve();
+  });
+
+  await page.getByTestId("filter-account").selectOption(String(slowId));
+  await page.getByTestId("apply-filters").click();
+  await starts[0].promise;
+  await expect(page.getByText("Loading ledger…")).toBeVisible();
+  await page.getByTestId("filter-account").selectOption(String(fastId));
+  await page.getByTestId("apply-filters").click();
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Fast race item" })).toHaveCount(1);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹700.00");
+  releases[0].resolve();
+  await finishes[0].promise;
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Fast race item" })).toHaveCount(1);
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Slow race" })).toHaveCount(0);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹700.00");
+
+  await page.getByTestId("filter-account").selectOption(String(slowId));
+  await page.getByTestId("apply-filters").click();
+  await starts[1].promise;
+  await page.getByTestId("filter-account").selectOption(String(fastId));
+  await page.getByTestId("apply-filters").click();
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Fast race item" })).toHaveCount(1);
+  releases[1].resolve();
+  await finishes[1].promise;
+  await expect(page.getByText("Stale ledger failure")).toHaveCount(0);
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Fast race item" })).toHaveCount(1);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹700.00");
+});
+
+test("ledger ignores a superseded account-history response", async ({ page, request }) => {
+  const accountIds: number[] = [];
+  for (const name of ["History slow account", "History fast account"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 0 },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [slowId, fastId] = accountIds;
+  for (const [accountId, name, amount] of [
+    [slowId, "Slow history item", 40000],
+    [fastId, "Fast history item", 80000],
+  ] as const) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind: "expense",
+        account_id: accountId,
+        amount_minor: amount,
+        name,
+        occurred_at: "2026-11-21T12:00:00",
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+
+  await page.goto("/");
+  const release = deferred();
+  const started = deferred();
+  const finished = deferred();
+  await page.route(new RegExp(`/api/accounts/${slowId}/history\\?limit=200&offset=0$`), async (route) => {
+    started.resolve();
+    const response = await route.fetch();
+    await release.promise;
+    await route.fulfill({ response });
+    finished.resolve();
+  });
+  await page.getByTestId(`account-history-${slowId}`).click();
+  await started.promise;
+  await expect(page.getByText("Loading ledger…")).toBeVisible();
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId(`account-history-${fastId}`).click();
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Fast history item" })).toHaveCount(1);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹800.00");
+  release.resolve();
+  await finished.promise;
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Fast history item" })).toHaveCount(1);
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Slow history item" })).toHaveCount(0);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹800.00");
+});
+
+test("ledger ignores an obsolete load-more page after a filter change", async ({ page, request }) => {
+  const accountIds: number[] = [];
+  for (const name of ["Page race account", "Page active account"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 0 },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [pageId, activeId] = accountIds;
+  for (let start = 1; start <= 201; start += 10) {
+    const batch = [];
+    for (let value = start; value < Math.min(start + 10, 202); value += 1) {
+      batch.push(
+        request.post("/api/transactions", {
+          data: {
+            kind: "expense",
+            account_id: pageId,
+            amount_minor: 100,
+            name: `Stale page item ${value}`,
+            occurred_at: "2026-11-22T12:00:00",
+          },
+        }),
+      );
+    }
+    const responses = await Promise.all(batch);
+    for (const response of responses) expect(response.ok()).toBeTruthy();
+  }
+  const activeResponse = await request.post("/api/transactions", {
+    data: {
+      kind: "expense",
+      account_id: activeId,
+      amount_minor: 500,
+      name: "Active page item",
+      occurred_at: "2026-11-22T12:00:00",
+    },
+  });
+  expect(activeResponse.ok()).toBeTruthy();
+
+  await page.goto("/");
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("filter-account").selectOption(String(pageId));
+  await page.getByTestId("apply-filters").click();
+  await expect(page.locator(".load-more")).toContainText("Showing 200 of 201");
+  const release = deferred();
+  const started = deferred();
+  const finished = deferred();
+  await page.route("**/api/ledger?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.searchParams.get("account_id") !== String(pageId) ||
+      url.searchParams.get("offset") !== "200"
+    ) {
+      await route.continue();
+      return;
+    }
+    started.resolve();
+    const response = await route.fetch();
+    await release.promise;
+    await route.fulfill({ response });
+    finished.resolve();
+  });
+  await page.getByTestId("load-more").click();
+  await started.promise;
+  await page.getByTestId("filter-account").selectOption(String(activeId));
+  await page.getByTestId("apply-filters").click();
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Active page item" })).toHaveCount(1);
+  await expect(page.locator(".ledger-day-header")).toContainText("Expense ₹5.00");
+  release.resolve();
+  await finished.promise;
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Active page item" })).toHaveCount(1);
+  await expect(page.locator('[data-testid^="ledger-row-expense-"]').filter({ hasText: "Stale page item" })).toHaveCount(0);
+  await expect(page.locator(".load-more")).toHaveCount(0);
+});
+
 test("CSV download honors reopened saved filters and preserves transfers and special text", async ({
   page,
   request,
@@ -1208,4 +1419,87 @@ test("account editor sends only changed fields and preserves concurrent metadata
   await page.reload();
   await expect(renamedCard.getByTestId(`account-note-${accountId}`)).toHaveCount(0);
   await expect(renamedCard.getByTestId(`account-opening-date-${accountId}`)).toContainText("Not set");
+});
+
+test("credit card metadata and signed latest balance follow purchases and payments", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/");
+  await createAccount(page, "F03 Bank", "100000", "checking");
+  await page.getByTestId("account-name").fill("F03 Card");
+  await page.getByTestId("account-type").selectOption("credit_card");
+  await page.getByTestId("account-credit-limit").fill("14000");
+  await page.getByTestId("account-cutoff-day").fill("18");
+  await page.getByTestId("account-due-day").fill("2");
+  await page.getByTestId("opening-balance").fill("0");
+  await page.getByTestId("create-account").click();
+
+  const initialState = await (await request.get("/api/state")).json();
+  const cardId = initialState.accounts.find(
+    (account: { name: string }) => account.name === "F03 Card",
+  ).id as number;
+  let card = page.locator('[data-account-name="F03 Card"]');
+  await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toContainText("14,000.00");
+  await expect(card.getByTestId(`account-cutoff-day-${cardId}`)).toContainText("18");
+  await expect(card.getByTestId(`account-due-day-${cardId}`)).toContainText("2");
+  await expect(card.getByTestId(`account-balance-state-${cardId}`)).toContainText("Settled");
+  await page.reload();
+  card = page.locator('[data-account-name="F03 Card"]');
+  await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toContainText("14,000.00");
+
+  await page.getByTestId("transaction-name").fill("F03 card purchase");
+  await page.getByTestId("transaction-account").selectOption({ label: "F03 Card · INR" });
+  await page.getByTestId("transaction-amount").fill("166.12");
+  await page.getByRole("button", { name: "Record expense", exact: true }).click();
+  await expect(balance(page, "F03 Card")).toContainText("-₹166.12");
+  await expect(card.getByTestId(`account-balance-state-${cardId}`)).toContainText("Amount owed");
+  const expenseBeforePayment = await page.getByTestId("expense-total").textContent();
+
+  await page.getByTestId("transfer-name").fill("F03 card payment");
+  await page.getByTestId("transfer-from").selectOption({ label: "F03 Bank" });
+  await page.getByTestId("transfer-to").selectOption({ label: "F03 Card" });
+  await page.getByTestId("transfer-amount").fill("100");
+  await page.getByTestId("submit-transfer").click();
+  await expect(balance(page, "F03 Card")).toContainText("-₹66.12");
+  await expect(balance(page, "F03 Bank")).toContainText("99,900.00");
+  await expect(page.getByTestId("expense-total")).toHaveText(expenseBeforePayment || "");
+
+  await card.getByTestId(`account-type-edit-${cardId}`).click();
+  await card.getByTestId(`edit-account-credit-limit-${cardId}`).fill("15000");
+  await card.getByTestId(`edit-account-cutoff-day-${cardId}`).fill("20");
+  await card.getByTestId(`edit-account-due-day-${cardId}`).fill("3");
+  await card.getByTestId(`save-account-type-${cardId}`).click();
+  await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toContainText("15,000.00");
+  await expect(card.getByTestId(`account-cutoff-day-${cardId}`)).toContainText("20");
+  await expect(card.getByTestId(`account-due-day-${cardId}`)).toContainText("3");
+
+  await card.getByTestId(`account-type-edit-${cardId}`).click();
+  await card.getByTestId(`edit-account-type-${cardId}`).selectOption("checking");
+  await card.getByTestId(`save-account-type-${cardId}`).click();
+  await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toHaveCount(0);
+  await card.getByTestId(`account-type-edit-${cardId}`).click();
+  await card.getByTestId(`edit-account-type-${cardId}`).selectOption("credit_card");
+  await card.getByTestId(`save-account-type-${cardId}`).click();
+  await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toContainText("15,000.00");
+  await expect(card.getByTestId(`account-cutoff-day-${cardId}`)).toContainText("20");
+  await expect(card.getByTestId(`account-due-day-${cardId}`)).toContainText("3");
+
+  await card.getByTestId(`account-type-edit-${cardId}`).click();
+  await card.getByTestId(`edit-account-credit-limit-${cardId}`).fill("");
+  await card.getByTestId(`edit-account-cutoff-day-${cardId}`).fill("");
+  await card.getByTestId(`edit-account-due-day-${cardId}`).fill("");
+  await card.getByTestId(`save-account-type-${cardId}`).click();
+  await expect(card.getByTestId(`account-credit-limit-${cardId}`)).toContainText("Not set");
+  await expect(card.getByTestId(`account-cutoff-day-${cardId}`)).toContainText("Not set");
+  await expect(card.getByTestId(`account-due-day-${cardId}`)).toContainText("Not set");
+
+  await page.getByTestId("transfer-amount").fill("66.12");
+  await page.getByTestId("submit-transfer").click();
+  await expect(balance(page, "F03 Card")).toContainText("0.00");
+  await expect(card.getByTestId(`account-balance-state-${cardId}`)).toContainText("Settled");
+  await page.getByTestId("transfer-amount").fill("1");
+  await page.getByTestId("submit-transfer").click();
+  await expect(balance(page, "F03 Card")).toContainText("₹1.00");
+  await expect(card.getByTestId(`account-balance-state-${cardId}`)).toContainText("Credit balance");
 });

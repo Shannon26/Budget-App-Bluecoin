@@ -48,6 +48,47 @@ export default function AccountForm({ forms }: { forms: OverviewForms }) {
           />
           <small className="field-hint">Metadata only; posted entries keep their dates.</small>
         </label>
+        {forms.accountType === "credit_card" && (
+          <>
+            <label>
+              Credit limit <span className="optional">optional</span>
+              <input
+                data-testid="account-credit-limit"
+                value={forms.accountCreditLimit}
+                onChange={(event) => forms.setAccountCreditLimit(event.target.value)}
+                inputMode="decimal"
+                placeholder="14000.00"
+              />
+            </label>
+            <div className="form-row">
+              <label>
+                Cutoff day <span className="optional">optional</span>
+                <input
+                  data-testid="account-cutoff-day"
+                  type="number"
+                  min={1}
+                  max={31}
+                  step={1}
+                  value={forms.accountCutoffDay}
+                  onChange={(event) => forms.setAccountCutoffDay(event.target.value)}
+                />
+              </label>
+              <label>
+                Due day <span className="optional">optional</span>
+                <input
+                  data-testid="account-due-day"
+                  type="number"
+                  min={1}
+                  max={31}
+                  step={1}
+                  value={forms.accountDueDay}
+                  onChange={(event) => forms.setAccountDueDay(event.target.value)}
+                />
+              </label>
+            </div>
+            <p className="field-hint">Monthly metadata only; scheduling arrives with reports.</p>
+          </>
+        )}
         <div className="form-row">
           <label>
             Opening balance

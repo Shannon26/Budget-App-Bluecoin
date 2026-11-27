@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../../shared/api";
+import { parseMinorUnits } from "../../shared/money";
 import type { Account, AccountTypeDefinition, AccountUpdate } from "../../shared/types";
 import AccountTypeSelect from "./AccountTypeSelect";
 
@@ -17,6 +18,18 @@ interface AccountDraft {
   openingDate: string;
   hideFromSelection: boolean;
   hideFromReports: boolean;
+  creditLimit: string;
+  cutoffDay: string;
+  dueDay: string;
+}
+
+function optionalDay(value: string, label: string): number | null {
+  if (!value) return null;
+  const day = Number(value);
+  if (!Number.isInteger(day) || day < 1 || day > 31) {
+    throw new Error(`${label} must be between 1 and 31`);
+  }
+  return day;
 }
 
 export default function AccountTypeEditor({
@@ -32,6 +45,13 @@ export default function AccountTypeEditor({
   const [openingDate, setOpeningDate] = useState(account.opening_date || "");
   const [hideFromSelection, setHideFromSelection] = useState(account.hide_from_selection);
   const [hideFromReports, setHideFromReports] = useState(account.hide_from_reports);
+  const [creditLimit, setCreditLimit] = useState(
+    account.credit_limit_minor === null ? "" : (account.credit_limit_minor / 100).toFixed(2),
+  );
+  const [cutoffDay, setCutoffDay] = useState(
+    account.cutoff_day === null ? "" : String(account.cutoff_day),
+  );
+  const [dueDay, setDueDay] = useState(account.due_day === null ? "" : String(account.due_day));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openedDraft, setOpenedDraft] = useState<AccountDraft | null>(null);
@@ -44,6 +64,10 @@ export default function AccountTypeEditor({
       openingDate: account.opening_date || "",
       hideFromSelection: account.hide_from_selection,
       hideFromReports: account.hide_from_reports,
+      creditLimit:
+        account.credit_limit_minor === null ? "" : (account.credit_limit_minor / 100).toFixed(2),
+      cutoffDay: account.cutoff_day === null ? "" : String(account.cutoff_day),
+      dueDay: account.due_day === null ? "" : String(account.due_day),
     };
     setName(draft.name);
     setAccountType(draft.accountType);
@@ -51,6 +75,9 @@ export default function AccountTypeEditor({
     setOpeningDate(draft.openingDate);
     setHideFromSelection(draft.hideFromSelection);
     setHideFromReports(draft.hideFromReports);
+    setCreditLimit(draft.creditLimit);
+    setCutoffDay(draft.cutoffDay);
+    setDueDay(draft.dueDay);
     setOpenedDraft(draft);
     setError(null);
     setEditing(true);
@@ -78,6 +105,24 @@ export default function AccountTypeEditor({
       }
       if (hideFromReports !== openedDraft.hideFromReports) {
         update.hide_from_reports = hideFromReports;
+      }
+      if (accountType === "credit_card") {
+        if (creditLimit !== openedDraft.creditLimit) {
+          const limit = creditLimit.trim() ? parseMinorUnits(creditLimit) : null;
+          if (creditLimit.trim() && limit === null) {
+            throw new Error("Enter a valid credit limit");
+          }
+          if (limit !== null && limit <= 0) {
+            throw new Error("Credit limit must be greater than zero");
+          }
+          update.credit_limit_minor = limit;
+        }
+        if (cutoffDay !== openedDraft.cutoffDay) {
+          update.cutoff_day = optionalDay(cutoffDay, "Cutoff day");
+        }
+        if (dueDay !== openedDraft.dueDay) {
+          update.due_day = optionalDay(dueDay, "Due day");
+        }
       }
       if (Object.keys(update).length === 0) {
         setEditing(false);
@@ -130,6 +175,50 @@ export default function AccountTypeEditor({
         testId={`edit-account-type-${account.id}`}
         disabled={submitting}
       />
+      {accountType === "credit_card" && (
+        <>
+          <label>
+            Credit limit <span className="optional">optional</span>
+            <input
+              data-testid={`edit-account-credit-limit-${account.id}`}
+              value={creditLimit}
+              onChange={(event) => setCreditLimit(event.target.value)}
+              inputMode="decimal"
+              placeholder="14000.00"
+              disabled={submitting}
+            />
+          </label>
+          <div className="form-row">
+            <label>
+              Cutoff day <span className="optional">optional</span>
+              <input
+                data-testid={`edit-account-cutoff-day-${account.id}`}
+                type="number"
+                min={1}
+                max={31}
+                step={1}
+                value={cutoffDay}
+                onChange={(event) => setCutoffDay(event.target.value)}
+                disabled={submitting}
+              />
+            </label>
+            <label>
+              Due day <span className="optional">optional</span>
+              <input
+                data-testid={`edit-account-due-day-${account.id}`}
+                type="number"
+                min={1}
+                max={31}
+                step={1}
+                value={dueDay}
+                onChange={(event) => setDueDay(event.target.value)}
+                disabled={submitting}
+              />
+            </label>
+          </div>
+          <p className="field-hint">Monthly metadata only; scheduling arrives with reports.</p>
+        </>
+      )}
       <label>
         Note <span className="optional">optional</span>
         <textarea

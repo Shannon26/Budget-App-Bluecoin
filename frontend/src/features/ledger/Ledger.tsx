@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { api } from "../../shared/api";
 import { formatMinor, parseMinorUnits } from "../../shared/money";
 import type {
@@ -28,6 +36,12 @@ interface DraftFilter {
   reconciled: string;
   amount_min: string;
   amount_max: string;
+}
+
+interface LedgerViewIdentity {
+  historyAccountId: number | null;
+  filterKey: string;
+  dataEntries: LedgerEntry[];
 }
 
 const emptyDraft: DraftFilter = {
@@ -67,6 +81,20 @@ function draftFromFilter(filter: FilterDefinition): DraftFilter {
   };
 }
 
+function appliedFilterKey(filter: FilterDefinition): string {
+  return JSON.stringify([
+    filter.search ?? null,
+    filter.date_from ?? null,
+    filter.date_to ?? null,
+    filter.account_id ?? null,
+    filter.category_id ?? null,
+    filter.uncategorized ?? false,
+    filter.reconciled ?? null,
+    filter.amount_min_minor ?? null,
+    filter.amount_max_minor ?? null,
+  ]);
+}
+
 export default function Ledger({
   data,
   refresh,
@@ -85,47 +113,121 @@ export default function Ledger({
   const [deleteTarget, setDeleteTarget] = useState<LedgerEntry | null>(null);
   const [filterName, setFilterName] = useState("");
   const [selectedFilterId, setSelectedFilterId] = useState("");
-  const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [viewStatus, setViewStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [statusViewIdentity, setStatusViewIdentity] = useState<LedgerViewIdentity | null>(null);
   const [exporting, setExporting] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const loadPage = useCallback(async (offset = 0, append = false) => {
-    if (append) {
-      setLoadingMore(true);
-    } else {
-      setLoading(true);
-    }
-    try {
-      const result = historyAccountId
-        ? await api.accountHistory(historyAccountId, offset)
-        : await api.ledger(applied, offset);
-      setEntries((current) => {
-        const merged = append ? [...current, ...result.entries] : result.entries;
-        return [...new Map(merged.map((entry) => [`${entry.kind}-${entry.id}`, entry])).values()];
-      });
-      setDailyTotals(result.daily_totals);
-      setTotalCount(result.total_count);
-      setNextOffset(result.next_offset);
-    } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "Could not load ledger", true);
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, [applied, historyAccountId, onMessage]);
+  const viewIdentity = useMemo<LedgerViewIdentity>(
+    () => ({
+      historyAccountId,
+      filterKey: appliedFilterKey(applied),
+      dataEntries: data.entries,
+    }),
+    [applied, data.entries, historyAccountId],
+  );
+  const activeViewIdentityRef = useRef<LedgerViewIdentity | null>(viewIdentity);
+
+  useLayoutEffect(() => {
+    activeViewIdentityRef.current = viewIdentity;
+    return () => {
+      if (activeViewIdentityRef.current === viewIdentity) {
+        activeViewIdentityRef.current = null;
+      }
+    };
+  }, [viewIdentity]);
+
+  const mountedRef = useRef(false);
+  const requestSequenceRef = useRef(0);
+
+  const isCurrentRequest = useCallback(
+    (request: number, requestViewIdentity: LedgerViewIdentity) =>
+      mountedRef.current &&
+      request === requestSequenceRef.current &&
+      requestViewIdentity === activeViewIdentityRef.current,
+    [],
+  );
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestSequenceRef.current += 1;
+    };
+  }, []);
+
+  const loadPage = useCallback(
+    async (offset = 0, append = false) => {
+      const request = ++requestSequenceRef.current;
+      const requestViewIdentity = viewIdentity;
+      if (append) {
+        setLoadingMore(true);
+      } else {
+        setViewStatus("loading");
+        setStatusViewIdentity(requestViewIdentity);
+      }
+      try {
+        const result = historyAccountId
+          ? await api.accountHistory(historyAccountId, offset)
+          : await api.ledger(applied, offset);
+        if (!isCurrentRequest(request, requestViewIdentity)) return;
+        setEntries((current) => {
+          if (!isCurrentRequest(request, requestViewIdentity)) return current;
+          const merged = append ? [...current, ...result.entries] : result.entries;
+          return [
+            ...new Map(
+              merged.map((entry) => [`${entry.kind}-${entry.id}`, entry]),
+            ).values(),
+          ];
+        });
+        setDailyTotals(result.daily_totals);
+        setTotalCount(result.total_count);
+        setNextOffset(result.next_offset);
+        setViewStatus("ready");
+        setStatusViewIdentity(requestViewIdentity);
+      } catch (reason) {
+        if (!isCurrentRequest(request, requestViewIdentity)) return;
+        if (!append) {
+          setViewStatus("error");
+          setStatusViewIdentity(requestViewIdentity);
+        }
+        onMessage(reason instanceof Error ? reason.message : "Could not load ledger", true);
+      } finally {
+        if (isCurrentRequest(request, requestViewIdentity)) {
+          setLoadingMore(false);
+        }
+      }
+    },
+    [applied, historyAccountId, isCurrentRequest, onMessage, viewIdentity],
+  );
+
+  useEffect(() => {
+    requestSequenceRef.current += 1;
+    setEntries([]);
+    setDailyTotals([]);
+    setTotalCount(0);
+    setNextOffset(null);
+    setLoadingMore(false);
+    setViewStatus("loading");
+    setStatusViewIdentity(viewKey);
     void loadPage();
-  }, [loadPage, data.entries]);
+  }, [data.entries, loadPage, viewKey]);
+
+  const activeViewStatus = statusViewKey === viewKey ? viewStatus : "loading";
+  const visibleEntries = statusViewKey === viewKey ? entries : [];
+  const visibleDailyTotals = statusViewKey === viewKey ? dailyTotals : [];
+  const visibleTotalCount = statusViewKey === viewKey ? totalCount : 0;
+  const visibleNextOffset =
+    statusViewKey === viewKey && activeViewStatus === "ready" ? nextOffset : null;
 
   const groups = useMemo(() => {
-    const totalsByDate = new Map(dailyTotals.map((total) => [total.date, total]));
+    const totalsByDate = new Map(visibleDailyTotals.map((total) => [total.date, total]));
     const map = new Map<
       string,
       { date: string; entries: LedgerEntry[]; income: number; expense: number; transfer: number }
     >();
-    for (const entry of entries) {
+    for (const entry of visibleEntries) {
       const date = entry.occurred_at.slice(0, 10);
       const total = totalsByDate.get(date);
       const group = map.get(date) ?? {
@@ -139,7 +241,7 @@ export default function Ledger({
       map.set(date, group);
     }
     return [...map.values()].sort((left, right) => right.date.localeCompare(left.date));
-  }, [entries, dailyTotals]);
+  }, [visibleEntries, visibleDailyTotals]);
 
   function applyFilters() {
     const min = draft.amount_min ? parseMinorUnits(draft.amount_min) : null;
@@ -479,8 +581,10 @@ export default function Ledger({
         </div>
       )}
 
-      {loading && entries.length === 0 ? (
+      {activeViewStatus === "loading" ? (
         <div className="empty-state">Loading ledger…</div>
+      ) : activeViewStatus === "error" ? (
+        <div className="empty-state">Could not load ledger.</div>
       ) : groups.length === 0 ? (
         <div className="empty-state">No entries match this view.</div>
       ) : (
@@ -527,15 +631,15 @@ export default function Ledger({
         </div>
       )}
 
-      {nextOffset !== null && (
+      {visibleNextOffset !== null && (
         <div className="load-more">
-          <span>Showing {entries.length} of {totalCount} matching entries</span>
+          <span>Showing {visibleEntries.length} of {visibleTotalCount} matching entries</span>
           <button
             className="secondary-button"
             data-testid="load-more"
             type="button"
             disabled={loadingMore}
-            onClick={() => void loadPage(nextOffset, true)}
+            onClick={() => void loadPage(visibleNextOffset, true)}
           >
             {loadingMore ? "Loading…" : "Load more"}
           </button>

@@ -4,6 +4,7 @@ use crate::models::*;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use sqlx::{Executor, Sqlite};
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct Store {
@@ -79,7 +80,8 @@ impl Store {
     {
         sqlx::query_as::<_, Account>(
             "SELECT id, name, currency, opening_balance_minor, created_at, account_type,
-                    note, opening_date, hide_from_selection, hide_from_reports
+                    note, opening_date, hide_from_selection, hide_from_reports,
+                    credit_limit_minor, cutoff_day, due_day
              FROM accounts WHERE id = ?",
         )
         .bind(account_id)
@@ -89,40 +91,85 @@ impl Store {
     }
 
     pub async fn state(&self) -> AppResult<StateResponse> {
-        let accounts = sqlx::query_as::<_, AccountWithBalance>(
-            "SELECT a.id, a.name, a.currency, a.opening_balance_minor, a.created_at,
-                    a.account_type, a.note, a.opening_date,
-                    a.hide_from_selection, a.hide_from_reports,
-                    COALESCE(
-                        a.opening_balance_minor + SUM(
-                            CASE e.kind
-                                WHEN 'income' THEN e.amount_minor
-                                WHEN 'expense' THEN -e.amount_minor
-                                WHEN 'transfer_out' THEN -e.amount_minor
-                                WHEN 'transfer_in' THEN e.amount_minor
-                                ELSE 0
-                            END
-                        ),
-                        a.opening_balance_minor
-                    ) AS balance_minor
-             FROM accounts a
-             LEFT JOIN entries e ON e.account_id = a.id
-             GROUP BY a.id
-             ORDER BY a.id",
+        let account_rows = sqlx::query_as::<_, Account>(
+            "SELECT id, name, currency, opening_balance_minor, created_at, account_type,
+                    note, opening_date, hide_from_selection, hide_from_reports,
+                    credit_limit_minor, cutoff_day, due_day
+             FROM accounts ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let entry_deltas = sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT account_id, kind, amount_minor FROM entries",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        let totals = sqlx::query_as::<_, Totals>(
-            "SELECT
-                COALESCE(SUM(CASE WHEN kind = 'income' THEN amount_minor ELSE 0 END), 0)
-                    AS income_minor,
-                COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount_minor ELSE 0 END), 0)
-                    AS expense_minor
-             FROM entries",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        // Accumulate in i128 so intermediate additions cannot wrap at the i64 API
+        // boundary. The final signed balance/total must still fit in i64.
+        let mut balances: HashMap<i64, i128> = account_rows
+            .iter()
+            .map(|account| (account.id, i128::from(account.opening_balance_minor)))
+            .collect();
+        let mut income_minor = 0_i128;
+        let mut expense_minor = 0_i128;
+        for (account_id, kind, amount_minor) in entry_deltas {
+            let delta = match kind.as_str() {
+                "income" => i128::from(amount_minor),
+                "expense" | "transfer_out" => -i128::from(amount_minor),
+                "transfer_in" => i128::from(amount_minor),
+                _ => 0,
+            };
+            if let Some(balance) = balances.get_mut(&account_id) {
+                *balance += delta;
+            }
+            if kind == "income" {
+                income_minor += i128::from(amount_minor);
+            } else if kind == "expense" {
+                expense_minor += i128::from(amount_minor);
+            }
+        }
+
+        let accounts = account_rows
+            .into_iter()
+            .map(|account| {
+                let balance = i64::try_from(balances.get(&account.id).copied().unwrap_or(0))
+                    .map_err(|_| {
+                        AppError::Conflict(
+                            "account balance is outside the supported integer range".to_string(),
+                        )
+                    })?;
+                Ok(AccountWithBalance {
+                    id: account.id,
+                    name: account.name,
+                    currency: account.currency,
+                    opening_balance_minor: account.opening_balance_minor,
+                    created_at: account.created_at,
+                    note: account.note,
+                    opening_date: account.opening_date,
+                    hide_from_selection: account.hide_from_selection,
+                    hide_from_reports: account.hide_from_reports,
+                    balance_minor: balance,
+                    account_type: account.account_type,
+                    account_group: account.account_group,
+                    credit_limit_minor: account.credit_limit_minor,
+                    cutoff_day: account.cutoff_day,
+                    due_day: account.due_day,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let totals = Totals {
+            income_minor: i64::try_from(income_minor).map_err(|_| {
+                AppError::Conflict(
+                    "ledger total is outside the supported integer range".to_string(),
+                )
+            })?,
+            expense_minor: i64::try_from(expense_minor).map_err(|_| {
+                AppError::Conflict(
+                    "ledger total is outside the supported integer range".to_string(),
+                )
+            })?,
+        };
         let categories = self.categories().await?;
         let category_totals = self.category_totals().await?;
         let saved_filters = self.saved_filters().await?;
@@ -149,5 +196,6 @@ mod budgets;
 mod categories;
 mod filters;
 mod ledger;
+mod reports;
 mod transactions;
 mod transfers;

@@ -77,6 +77,10 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
         .route("/api/ledger", get(routes::ledger::ledger))
         .route("/api/ledger/export", get(routes::ledger::export_ledger))
         .route(
+            "/api/reports/net-earnings",
+            get(routes::reports::net_earnings),
+        )
+        .route(
             "/api/categories",
             get(routes::categories::list_categories).post(routes::categories::create_category),
         )

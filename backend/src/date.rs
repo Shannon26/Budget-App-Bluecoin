@@ -51,6 +51,22 @@ pub fn month_bounds(value: &str) -> Option<(String, String)> {
     Some((first, next))
 }
 
+pub fn previous_month(value: &str) -> Option<String> {
+    if !is_valid_month(value) {
+        return None;
+    }
+    let year = value[..4].parse::<u32>().ok()?;
+    let month = value[5..7].parse::<u32>().ok()?;
+    if year == 0 || (year == 1 && month == 1) {
+        return None;
+    }
+    if month == 1 {
+        Some(format!("{:04}-12", year - 1))
+    } else {
+        Some(format!("{:04}-{:02}", year, month - 1))
+    }
+}
+
 fn has_iso_date_prefix(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 10
@@ -114,6 +130,17 @@ mod tests {
         ] {
             assert!(!is_valid_calendar_date(value), "{value}");
         }
+    }
+
+    #[test]
+    fn finds_previous_calendar_month_across_year_boundaries() {
+        assert_eq!(previous_month("2026-01").as_deref(), Some("2025-12"));
+        assert_eq!(previous_month("2024-03").as_deref(), Some("2024-02"));
+        assert_eq!(previous_month("2026-12").as_deref(), Some("2026-11"));
+        assert!(is_valid_month("0000-01"));
+        assert_eq!(previous_month("0000-01"), None);
+        assert_eq!(previous_month("0001-01"), None);
+        assert_eq!(previous_month("2026-13"), None);
     }
 
     #[test]

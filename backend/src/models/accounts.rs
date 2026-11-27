@@ -1,8 +1,10 @@
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{FromRow, Row};
 
 pub const UNCLASSIFIED_ACCOUNT_TYPE: &str = "unclassified";
+pub const CREDIT_CARD_ACCOUNT_TYPE: &str = "credit_card";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AccountTypeDefinition {
@@ -118,6 +120,12 @@ pub struct CreateAccountRequest {
     pub hide_from_selection: bool,
     #[serde(default)]
     pub hide_from_reports: bool,
+    #[serde(default)]
+    pub credit_limit_minor: Option<i64>,
+    #[serde(default)]
+    pub cutoff_day: Option<i64>,
+    #[serde(default)]
+    pub due_day: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +142,12 @@ pub struct UpdateAccountRequest {
     pub hide_from_selection: Option<bool>,
     #[serde(default)]
     pub hide_from_reports: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    pub credit_limit_minor: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    pub cutoff_day: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    pub due_day: Option<Option<i64>>,
 }
 
 fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
@@ -143,11 +157,18 @@ where
     Option::<String>::deserialize(deserializer).map(Some)
 }
 
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<i64>::deserialize(deserializer).map(Some)
+}
+
 fn default_currency() -> String {
     "INR".to_string()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Account {
     pub id: i64,
     pub name: String,
@@ -160,6 +181,9 @@ pub struct Account {
     pub hide_from_reports: bool,
     pub account_type: String,
     pub account_group: String,
+    pub credit_limit_minor: Option<i64>,
+    pub cutoff_day: Option<i64>,
+    pub due_day: Option<i64>,
 }
 
 impl FromRow<'_, SqliteRow> for Account {
@@ -175,13 +199,16 @@ impl FromRow<'_, SqliteRow> for Account {
             opening_date: row.try_get("opening_date")?,
             hide_from_selection: row.try_get("hide_from_selection")?,
             hide_from_reports: row.try_get("hide_from_reports")?,
+            credit_limit_minor: row.try_get("credit_limit_minor")?,
+            cutoff_day: row.try_get("cutoff_day")?,
+            due_day: row.try_get("due_day")?,
             account_group: account_group_for(&account_type).to_string(),
             account_type,
         })
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct AccountWithBalance {
     pub id: i64,
     pub name: String,
@@ -195,6 +222,9 @@ pub struct AccountWithBalance {
     pub balance_minor: i64,
     pub account_type: String,
     pub account_group: String,
+    pub credit_limit_minor: Option<i64>,
+    pub cutoff_day: Option<i64>,
+    pub due_day: Option<i64>,
 }
 
 impl FromRow<'_, SqliteRow> for AccountWithBalance {
@@ -210,9 +240,86 @@ impl FromRow<'_, SqliteRow> for AccountWithBalance {
             opening_date: row.try_get("opening_date")?,
             hide_from_selection: row.try_get("hide_from_selection")?,
             hide_from_reports: row.try_get("hide_from_reports")?,
+            credit_limit_minor: row.try_get("credit_limit_minor")?,
+            cutoff_day: row.try_get("cutoff_day")?,
+            due_day: row.try_get("due_day")?,
             balance_minor: row.try_get("balance_minor")?,
             account_group: account_group_for(&account_type).to_string(),
             account_type,
         })
+    }
+}
+
+fn visible_card_metadata(
+    account_type: &str,
+    credit_limit_minor: Option<i64>,
+    cutoff_day: Option<i64>,
+    due_day: Option<i64>,
+) -> (Option<i64>, Option<i64>, Option<i64>) {
+    if account_type == CREDIT_CARD_ACCOUNT_TYPE {
+        (credit_limit_minor, cutoff_day, due_day)
+    } else {
+        (None, None, None)
+    }
+}
+
+impl Serialize for Account {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (credit_limit_minor, cutoff_day, due_day) = visible_card_metadata(
+            &self.account_type,
+            self.credit_limit_minor,
+            self.cutoff_day,
+            self.due_day,
+        );
+        let mut state = serializer.serialize_struct("Account", 14)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("currency", &self.currency)?;
+        state.serialize_field("opening_balance_minor", &self.opening_balance_minor)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("note", &self.note)?;
+        state.serialize_field("opening_date", &self.opening_date)?;
+        state.serialize_field("hide_from_selection", &self.hide_from_selection)?;
+        state.serialize_field("hide_from_reports", &self.hide_from_reports)?;
+        state.serialize_field("account_type", &self.account_type)?;
+        state.serialize_field("account_group", &self.account_group)?;
+        state.serialize_field("credit_limit_minor", &credit_limit_minor)?;
+        state.serialize_field("cutoff_day", &cutoff_day)?;
+        state.serialize_field("due_day", &due_day)?;
+        state.end()
+    }
+}
+
+impl Serialize for AccountWithBalance {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (credit_limit_minor, cutoff_day, due_day) = visible_card_metadata(
+            &self.account_type,
+            self.credit_limit_minor,
+            self.cutoff_day,
+            self.due_day,
+        );
+        let mut state = serializer.serialize_struct("AccountWithBalance", 15)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("currency", &self.currency)?;
+        state.serialize_field("opening_balance_minor", &self.opening_balance_minor)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("note", &self.note)?;
+        state.serialize_field("opening_date", &self.opening_date)?;
+        state.serialize_field("hide_from_selection", &self.hide_from_selection)?;
+        state.serialize_field("hide_from_reports", &self.hide_from_reports)?;
+        state.serialize_field("balance_minor", &self.balance_minor)?;
+        state.serialize_field("account_type", &self.account_type)?;
+        state.serialize_field("account_group", &self.account_group)?;
+        state.serialize_field("credit_limit_minor", &credit_limit_minor)?;
+        state.serialize_field("cutoff_day", &cutoff_day)?;
+        state.serialize_field("due_day", &due_day)?;
+        state.end()
     }
 }
