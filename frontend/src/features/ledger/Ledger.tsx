@@ -122,6 +122,15 @@ export default function Ledger({
   const [deleteTarget, setDeleteTarget] = useState<LedgerEntry | null>(null);
   const [filterName, setFilterName] = useState("");
   const [selectedFilterId, setSelectedFilterId] = useState("");
+  const [editingFilter, setEditingFilter] = useState<{
+    id: number;
+    name: string;
+    replaceCriteria: boolean;
+  } | null>(null);
+  const [savingFilter, setSavingFilter] = useState(false);
+  const selectedFilter = data.saved_filters.find(
+    (filter) => String(filter.id) === selectedFilterId,
+  );
   const [loadingMore, setLoadingMore] = useState(false);
   const [viewStatus, setViewStatus] = useState<"loading" | "ready" | "error">("loading");
   const [statusViewIdentity, setStatusViewIdentity] = useState<LedgerViewIdentity | null>(null);
@@ -166,6 +175,17 @@ export default function Ledger({
       requestSequenceRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      editingFilter &&
+      (historyAccountId !== null ||
+        invalidDateCorrection ||
+        !data.saved_filters.some((filter) => filter.id === editingFilter.id))
+    ) {
+      setEditingFilter(null);
+    }
+  }, [data.saved_filters, editingFilter, historyAccountId, invalidDateCorrection]);
 
   const loadPage = useCallback(
     async (offset = 0, append = false) => {
@@ -324,7 +344,33 @@ export default function Ledger({
     }
   }
 
+  async function updateSelectedFilter() {
+    if (!editingFilter || !selectedFilter || historyAccountId !== null || invalidDateCorrection) {
+      return;
+    }
+    const name = editingFilter.name.trim();
+    if (!name || Array.from(name).length > 80) {
+      onMessage("Filter name must be between 1 and 80 characters", true);
+      return;
+    }
+    setSavingFilter(true);
+    try {
+      await api.updateFilter(editingFilter.id, {
+        name,
+        definition: editingFilter.replaceCriteria ? applied : selectedFilter.definition,
+      });
+      setEditingFilter(null);
+      await refresh();
+      onMessage("Saved filter updated.");
+    } catch (reason) {
+      onMessage(reason instanceof Error ? reason.message : "Could not update saved filter", true);
+    } finally {
+      setSavingFilter(false);
+    }
+  }
+
   async function removeFilter(id: number) {
+    setEditingFilter(null);
     try {
       await api.deleteFilter(id);
       setSelectedFilterId("");
@@ -567,6 +613,7 @@ export default function Ledger({
                 value={selectedFilterId}
                 onChange={(event) => {
                   const selectedId = event.target.value;
+                  setEditingFilter(null);
                   setSelectedFilterId(selectedId);
                   const filter = data.saved_filters.find(
                     (saved) => String(saved.id) === selectedId,
@@ -585,6 +632,23 @@ export default function Ledger({
                 ))}
               </select>
             </label>
+            {selectedFilter && (
+              <button
+                className="secondary-button"
+                data-testid="edit-saved-filter"
+                type="button"
+                disabled={savingFilter}
+                onClick={() =>
+                  setEditingFilter({
+                    id: selectedFilter.id,
+                    name: selectedFilter.name,
+                    replaceCriteria: false,
+                  })
+                }
+              >
+                Edit selected
+              </button>
+            )}
             <input
               data-testid="save-filter-name"
               value={filterName}
@@ -597,7 +661,9 @@ export default function Ledger({
             {data.saved_filters.length > 0 && (
               <button
                 className="text-button danger-text"
+                data-testid="delete-saved-filter"
                 type="button"
+                disabled={!selectedFilterId || savingFilter}
                 onClick={() => {
                   const selectedId = Number(selectedFilterId);
                   if (selectedId) void removeFilter(selectedId);
@@ -607,6 +673,62 @@ export default function Ledger({
               </button>
             )}
           </div>
+          {editingFilter && selectedFilter && (
+            <form className="saved-filter-editor" onSubmit={(event) => {
+              event.preventDefault();
+              void updateSelectedFilter();
+            }}>
+              <label>
+                Saved filter name
+                <input
+                  data-testid="edit-filter-name"
+                  value={editingFilter.name}
+                  onChange={(event) =>
+                    setEditingFilter({ ...editingFilter, name: event.target.value })
+                  }
+                  maxLength={80}
+                  required
+                />
+              </label>
+              <label className="check-label inline-check">
+                <input
+                  data-testid="replace-filter-criteria"
+                  type="checkbox"
+                  checked={editingFilter.replaceCriteria}
+                  onChange={(event) =>
+                    setEditingFilter({
+                      ...editingFilter,
+                      replaceCriteria: event.target.checked,
+                    })
+                  }
+                />
+                Replace saved criteria with currently applied filters
+              </label>
+              <p className="field-hint">
+                Rename-only keeps the saved criteria. Replacement uses applied filters, never
+                unapplied draft fields, and is unavailable in account-history mode.
+              </p>
+              <div className="filter-actions">
+                <button
+                  className="primary-button compact-button"
+                  data-testid="save-filter-update"
+                  type="submit"
+                  disabled={savingFilter}
+                >
+                  {savingFilter ? "Saving…" : "Save changes"}
+                </button>
+                <button
+                  className="secondary-button"
+                  data-testid="cancel-filter-update"
+                  type="button"
+                  disabled={savingFilter}
+                  onClick={() => setEditingFilter(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       )}
 

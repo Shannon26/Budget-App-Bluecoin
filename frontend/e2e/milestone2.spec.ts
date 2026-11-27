@@ -2685,3 +2685,128 @@ test("Labels support management, atomic assignment, duplication, transfer histor
     "F13 Work",
   );
 });
+
+test("Saved filters support rename-only, explicit applied-criteria replacement, reload, CSV, and safe deletion", async ({
+  page,
+  request,
+}) => {
+  const accountResponse = await request.post("/api/accounts", {
+    data: { name: "F32 filter account", currency: "INR", opening_balance_minor: 100000 },
+  });
+  expect(accountResponse.ok()).toBeTruthy();
+  const accountId = (await accountResponse.json()).id as number;
+  const targetResponse = await request.post("/api/transactions", {
+    data: {
+      kind: "expense",
+      account_id: accountId,
+      amount_minor: 1000,
+      name: "F32 target entry",
+      category_id: null,
+      occurred_at: "2037-01-10T12:00:00",
+    },
+  });
+  expect(targetResponse.ok()).toBeTruthy();
+  const targetId = (await targetResponse.json()).id as number;
+  const otherResponse = await request.post("/api/transactions", {
+    data: {
+      kind: "expense",
+      account_id: accountId,
+      amount_minor: 2000,
+      name: "F32 other entry",
+      category_id: null,
+      occurred_at: "2037-01-11T12:00:00",
+    },
+  });
+  expect(otherResponse.ok()).toBeTruthy();
+  const otherId = (await otherResponse.json()).id as number;
+
+  await page.goto("/");
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("ledger-search").fill("target");
+  await page.getByTestId("apply-filters").click();
+  await expect(page.getByTestId(`ledger-row-expense-${targetId}`)).toBeVisible();
+  await page.getByTestId("save-filter-name").fill("F32 original");
+  await page.getByTestId("save-filter").click();
+  await expect(page.getByText("Named filter saved.")).toBeVisible();
+  const savedState = await (await request.get("/api/state")).json();
+  const filterId = savedState.saved_filters.find(
+    (filter: { name: string }) => filter.name === "F32 original",
+  ).id as number;
+
+  await page.getByTestId("saved-filter").selectOption({ label: "F32 original" });
+  await page.getByTestId("ledger-search").fill("other"); // Deliberately unapplied.
+  await page.route(`**/api/filters/${filterId}`, async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Could not update saved filter" }),
+    });
+  });
+  await page.getByTestId("edit-saved-filter").click();
+  await page.getByTestId("edit-filter-name").fill("F32 renamed");
+  await page.getByTestId("save-filter-update").click();
+  await expect(page.getByText("Could not update saved filter")).toBeVisible();
+  await expect(page.getByTestId("edit-filter-name")).toBeVisible();
+  await page.unroute(`**/api/filters/${filterId}`);
+  await page.getByTestId("save-filter-update").click();
+  await expect(page.getByText("Saved filter updated.")).toBeVisible();
+  await expect(page.getByTestId("edit-filter-name")).toHaveCount(0);
+
+  await page.reload();
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("saved-filter").selectOption({ label: "F32 renamed" });
+  await expect(page.getByTestId(`ledger-row-expense-${targetId}`)).toBeVisible();
+  await expect(page.getByTestId(`ledger-row-expense-${otherId}`)).toHaveCount(0);
+  const renamedCsv = await downloadLedgerCsv(page);
+  expect(renamedCsv.slice(1).map((row) => row[2])).toEqual(["F32 target entry"]);
+
+  await page.getByTestId("ledger-search").fill("other");
+  await page.getByTestId("apply-filters").click();
+  await expect(page.getByTestId(`ledger-row-expense-${otherId}`)).toBeVisible();
+  await page.getByTestId("edit-saved-filter").click();
+  await page.getByTestId("edit-filter-name").fill("F32 replaced");
+  await page.getByTestId("replace-filter-criteria").check();
+  await page.getByTestId("save-filter-update").click();
+  await expect(page.getByText("Saved filter updated.")).toBeVisible();
+
+  await page.reload();
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("saved-filter").selectOption({ label: "F32 replaced" });
+  await expect(page.getByTestId(`ledger-row-expense-${otherId}`)).toBeVisible();
+  await expect(page.getByTestId(`ledger-row-expense-${targetId}`)).toHaveCount(0);
+  const replacedCsv = await downloadLedgerCsv(page);
+  expect(replacedCsv.slice(1).map((row) => row[2])).toEqual(["F32 other entry"]);
+
+  await page.getByTestId("ledger-search").fill("target"); // Unapplied again.
+  await page.getByTestId("edit-saved-filter").click();
+  await page.getByTestId("edit-filter-name").fill("F32 final");
+  await page.getByTestId("save-filter-update").click();
+  await expect(page.getByText("Saved filter updated.")).toBeVisible();
+  await page.reload();
+  await page.getByTestId("nav-ledger").click();
+  await page.getByTestId("saved-filter").selectOption({ label: "F32 final" });
+  await expect(page.getByTestId(`ledger-row-expense-${otherId}`)).toBeVisible();
+  await expect(page.getByTestId(`ledger-row-expense-${targetId}`)).toHaveCount(0);
+
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId(`account-history-${accountId}`).click();
+  await expect(page.getByTestId("edit-saved-filter")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to full ledger" }).click();
+  await page.getByTestId("saved-filter").selectOption({ label: "F32 final" });
+  const beforeDelete = await (await request.get("/api/state")).json();
+  await page.getByTestId("delete-saved-filter").click();
+  await expect(page.getByText("Saved filter removed.")).toBeVisible();
+  const afterDelete = await (await request.get("/api/state")).json();
+  expect(afterDelete.saved_filters.some((filter: { id: number }) => filter.id === filterId)).toBe(false);
+  expect(afterDelete.saved_filters).toEqual(
+    beforeDelete.saved_filters.filter((filter: { id: number }) => filter.id !== filterId),
+  );
+  expect(afterDelete.entries).toEqual(beforeDelete.entries);
+  expect(afterDelete.accounts).toEqual(beforeDelete.accounts);
+  expect(afterDelete.entries.some((entry: { id: number }) => entry.id === targetId)).toBe(true);
+  expect(afterDelete.entries.some((entry: { id: number }) => entry.id === otherId)).toBe(true);
+});

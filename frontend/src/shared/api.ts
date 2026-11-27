@@ -245,6 +245,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateFilter: (id: number, input: { name: string; definition: FilterDefinition }) =>
+    request<SavedFilter>(`/filters/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
   deleteFilter: (id: number) =>
     request<{ ok: boolean }>(`/filters/${id}`, { method: "DELETE" }),
 };
