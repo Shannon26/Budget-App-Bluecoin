@@ -2536,3 +2536,152 @@ test("Balance Sheet reconciles signed month-end groups and keeps report states s
     }
   }
 });
+
+test("Labels support management, atomic assignment, duplication, transfer history, and stable CSV", async ({
+  page,
+  request,
+}) => {
+  const accountIds: number[] = [];
+  for (const [name, opening] of [
+    ["F13 checking", 100000],
+    ["F13 savings", 20000],
+  ] as const) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: opening },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [checkingId, savingsId] = accountIds;
+  const baselineState = await (await request.get("/api/state")).json();
+
+  await page.goto("/");
+  await page.getByTestId("nav-labels").click();
+  await expect(page.getByTestId("nav-labels")).toHaveAttribute("aria-current", "page");
+  for (const name of ["F13 Work", "F13 Personal"]) {
+    await page.getByTestId("new-label").click();
+    await page.getByTestId("label-name").fill(name);
+    await page.getByTestId("save-label").click();
+    await expect(page.getByRole("dialog", { name: "Label editor" })).toBeHidden();
+  }
+  const afterCreate = await (await request.get("/api/state")).json();
+  const work = afterCreate.labels.find((label: { name: string }) => label.name === "F13 Work").id as number;
+  const personal = afterCreate.labels.find((label: { name: string }) => label.name === "F13 Personal").id as number;
+  await page.getByTestId(`rename-label-${personal}`).click();
+  await page.getByTestId("label-name").fill("F13 Errands");
+  await page.getByTestId("save-label").click();
+  await expect(page.getByTestId(`label-row-${personal}`)).toContainText("F13 Errands");
+
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId("transaction-name").fill("F13 labelled expense");
+  await page.getByTestId("transaction-account").selectOption({ label: "F13 checking · INR" });
+  await page.getByTestId("transaction-amount").fill("123.45");
+  await page.getByLabel("Date", { exact: true }).first().fill("2036-06-15");
+  await page.getByTestId(`transaction-label-${work}`).check();
+  await page.getByTestId(`transaction-label-${personal}`).check();
+  await page.getByRole("button", { name: "Record expense", exact: true }).click();
+  await expect(page.getByTestId("transaction-name")).toHaveValue("");
+  const afterTransaction = await (await request.get("/api/state")).json();
+  const original = afterTransaction.entries.find(
+    (entry: { name: string }) => entry.name === "F13 labelled expense",
+  ).id as number;
+  expect(afterTransaction.entries[0].labels).toHaveLength(2);
+
+  await page.getByTestId("nav-ledger").click();
+  const originalRow = page.getByTestId(`ledger-row-expense-${original}`);
+  await expect(originalRow).toContainText("F13 Work");
+  await expect(originalRow).toContainText("F13 Errands");
+  await openEntry(page, "expense", "F13 labelled expense");
+  await expect(page.getByRole("dialog", { name: "Entry details" })).toContainText("F13 Work");
+  await page.getByRole("dialog", { name: "Entry details" }).getByRole("button", { name: "Edit" }).click();
+
+  await page.route(`**/api/transactions/${original}`, async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    const body = route.request().postDataJSON();
+    body.labels = [999999];
+    await route.continue({ postData: JSON.stringify(body) });
+  });
+  const editor = page.getByRole("dialog", { name: "Edit entry" });
+  await editor.getByTestId("save-edit").click();
+  await expect(editor.getByRole("alert")).toContainText("label 999999 was not found");
+  await expect(editor).toBeVisible();
+  await page.unroute(`**/api/transactions/${original}`);
+  const afterRejected = await (await request.get(`/api/transactions/${original}`)).json();
+  expect(afterRejected.labels).toHaveLength(2);
+
+  await editor.getByTestId(`edit-label-${personal}`).uncheck();
+  await editor.getByTestId("save-edit").click();
+  await expect(editor).toBeHidden();
+  await expect(originalRow).toContainText("F13 Work");
+  await expect(originalRow).not.toContainText("F13 Errands");
+
+  await page.reload();
+  await page.getByTestId("nav-ledger").click();
+  await expect(page.getByTestId(`ledger-row-expense-${original}`)).toContainText("F13 Work");
+  await openEntry(page, "expense", "F13 labelled expense");
+  await page.getByRole("dialog", { name: "Entry details" }).getByRole("button", { name: "Duplicate" }).click();
+  await expect(page.getByRole("dialog", { name: "Entry details" })).toBeHidden();
+  const afterDuplicate = await (await request.get("/api/state")).json();
+  const duplicate = afterDuplicate.entries.find(
+    (entry: { name: string; id: number }) => entry.name === "F13 labelled expense" && entry.id !== original,
+  ).id as number;
+  expect(afterDuplicate.entries.find((entry: { id: number }) => entry.id === duplicate).labels).toHaveLength(1);
+
+  await page.getByTestId(`ledger-row-expense-${original}`).click();
+  await page.getByRole("dialog", { name: "Entry details" }).getByRole("button", { name: "Edit" }).click();
+  await editor.getByTestId(`edit-label-${work}`).uncheck();
+  await editor.getByTestId("save-edit").click();
+  await expect(editor).toBeHidden();
+  await expect(page.getByTestId(`ledger-row-expense-${original}`)).not.toContainText("F13 Work");
+  await expect(page.getByTestId(`ledger-row-expense-${duplicate}`)).toContainText("F13 Work");
+
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId("transfer-name").fill("F13 labelled transfer");
+  await page.getByTestId("transfer-from").selectOption({ label: "F13 checking" });
+  await page.getByTestId("transfer-to").selectOption({ label: "F13 savings" });
+  await page.getByTestId("transfer-amount").fill("50");
+  await page.getByLabel("Date", { exact: true }).last().fill("2036-06-16");
+  await page.getByTestId(`transfer-label-${work}`).check();
+  await page.getByTestId("submit-transfer").click();
+  await expect(page.getByTestId("transfer-name")).toHaveValue("");
+  const afterTransfer = await (await request.get("/api/state")).json();
+  const transfer = afterTransfer.entries.find(
+    (entry: { name: string }) => entry.name === "F13 labelled transfer",
+  );
+  expect(transfer.labels).toHaveLength(1);
+  await page.getByTestId("nav-ledger").click();
+  await expect(page.getByTestId(`ledger-row-transfer-${transfer.id}`)).toContainText("F13 Work");
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId(`account-history-${checkingId}`).click();
+  await expect(page.getByTestId(`ledger-row-transfer_out-${transfer.id}`)).toContainText("F13 Work");
+  await page.getByTestId("nav-overview").click();
+  await page.getByTestId(`account-history-${savingsId}`).click();
+  await expect(page.getByTestId(`ledger-row-transfer_in-${transfer.id}`)).toContainText("F13 Work");
+  await page.getByRole("button", { name: "Back to full ledger" }).click();
+
+  const csv = await downloadLedgerCsv(page);
+  expect(csv[0]).toEqual([
+    "Date", "Type", "Name", "Account", "Source Account", "Destination Account",
+    "Category", "Subcategory", "Amount", "Currency", "Status", "Note",
+  ]);
+  expect(csv.filter((row) => row[2] === "F13 labelled expense")).toHaveLength(2);
+  expect(csv.filter((row) => row[2] === "F13 labelled transfer")).toHaveLength(1);
+  const finalState = await (await request.get("/api/state")).json();
+  expect(finalState.accounts.find((account: { id: number }) => account.id === checkingId).balance_minor).toBe(70310);
+  expect(finalState.accounts.find((account: { id: number }) => account.id === savingsId).balance_minor).toBe(25000);
+  expect(finalState.totals.expense_minor).toBe(baselineState.totals.expense_minor + 24690);
+
+  await page.getByTestId("nav-labels").click();
+  await expect(page.getByTestId(`label-row-${work}`)).toBeVisible();
+  await expect(page.getByTestId(`delete-label-${work}`)).toHaveCount(0);
+  const preserved = await (await request.get("/api/state")).json();
+  expect(
+    preserved.entries.find((entry: { id: number }) => entry.id === duplicate).labels[0].name,
+  ).toBe("F13 Work");
+  expect(preserved.entries.find((entry: { id: number }) => entry.id === transfer.id).labels[0].name).toBe(
+    "F13 Work",
+  );
+});

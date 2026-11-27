@@ -212,6 +212,7 @@ impl Store {
         entries.extend(transfers);
         Self::retain_date_matches(&mut entries, &filter);
         Self::order_entries(&mut entries);
+        self.attach_labels(&mut entries).await?;
         Ok(entries)
     }
 
@@ -251,6 +252,7 @@ impl Store {
         .await?;
         entries.retain(|entry| date_only(&entry.occurred_at).is_none());
         Self::order_entries(&mut entries);
+        self.attach_labels(&mut entries).await?;
         let total_count = entries.len();
         let limit = limit.unwrap_or(200).clamp(1, 200);
         let offset = offset.unwrap_or(0);
@@ -324,11 +326,12 @@ impl Store {
             .await?;
         entries.extend(transfers);
         Self::retain_date_matches(&mut entries, &filter);
+        self.attach_labels(&mut entries).await?;
         Self::build_page(entries, limit, offset, Self::has_date_filter(&filter))
     }
 
     pub async fn transaction_detail(&self, id: i64) -> AppResult<LedgerEntry> {
-        sqlx::query_as::<_, LedgerEntry>(
+        let entry = sqlx::query_as::<_, LedgerEntry>(
             "SELECT e.id, e.kind, e.name, e.note, e.account_id, a.name AS account_name,
                     NULL AS counterpart_account_id, NULL AS counterpart_account_name,
                     e.amount_minor, e.occurred_at, e.category_id, c.name AS category_name,
@@ -342,11 +345,14 @@ impl Store {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("transaction {id} was not found")))
+        .ok_or_else(|| AppError::NotFound(format!("transaction {id} was not found")))?;
+        let mut entries = vec![entry];
+        self.attach_labels(&mut entries).await?;
+        Ok(entries.remove(0))
     }
 
     pub async fn transfer_detail(&self, id: i64) -> AppResult<LedgerEntry> {
-        sqlx::query_as::<_, LedgerEntry>(
+        let entry = sqlx::query_as::<_, LedgerEntry>(
             "SELECT t.id, 'transfer' AS kind, t.name, t.note,
                     t.from_account_id AS account_id, fa.name AS account_name,
                     t.to_account_id AS counterpart_account_id, ta.name AS counterpart_account_name,
@@ -361,6 +367,9 @@ impl Store {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("transfer {id} was not found")))
+        .ok_or_else(|| AppError::NotFound(format!("transfer {id} was not found")))?;
+        let mut entries = vec![entry];
+        self.attach_labels(&mut entries).await?;
+        Ok(entries.remove(0))
     }
 }

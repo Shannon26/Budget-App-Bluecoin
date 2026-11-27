@@ -179,6 +179,7 @@ impl Store {
         let categories = self.categories().await?;
         let category_totals = self.category_totals().await?;
         let saved_filters = self.saved_filters().await?;
+        let labels = self.labels().await?;
         let entries = self
             .ledger(FilterDefinition::default(), None, None)
             .await?
@@ -191,6 +192,7 @@ impl Store {
             categories,
             category_totals,
             saved_filters,
+            labels,
             entries,
         })
     }
@@ -201,6 +203,7 @@ mod budget_rules;
 mod budgets;
 mod categories;
 mod filters;
+mod labels;
 mod ledger;
 mod reports;
 mod transactions;

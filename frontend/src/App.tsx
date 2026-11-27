@@ -5,6 +5,7 @@ import type { BudgetState } from "./shared/types";
 import BalanceSheet from "./features/reports/BalanceSheet";
 import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
+import LabelsManager from "./features/labels/LabelsManager";
 import Ledger from "./features/ledger/Ledger";
 import Overview from "./features/overview/Overview";
 import ItemsSummary from "./features/reports/ItemsSummary";
@@ -18,10 +19,11 @@ const emptyState: BudgetState = {
   categories: [],
   category_totals: [],
   saved_filters: [],
+  labels: [],
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "budgets" | "reports" | "items" | "balance";
+type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "balance";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -112,6 +114,15 @@ export default function App() {
           Categories
         </button>
         <button
+          data-testid="nav-labels"
+          className={activeTab === "labels" ? "active" : ""}
+          aria-current={activeTab === "labels" ? "page" : undefined}
+          type="button"
+          onClick={() => setActiveTab("labels")}
+        >
+          Labels
+        </button>
+        <button
           data-testid="nav-budgets"
           className={activeTab === "budgets" ? "active" : ""}
           aria-current={activeTab === "budgets" ? "page" : undefined}
@@ -197,6 +208,12 @@ export default function App() {
         {activeTab === "categories" && (
           <section className="panel ledger-panel">
             <CategoryManager data={data} refresh={refresh} onMessage={onMessage} />
+          </section>
+        )}
+
+        {activeTab === "labels" && (
+          <section className="panel ledger-panel">
+            <LabelsManager data={data} refresh={refresh} onMessage={onMessage} />
           </section>
         )}
 

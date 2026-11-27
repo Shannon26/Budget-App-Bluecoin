@@ -2,7 +2,7 @@ use super::Store;
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::Utc;
-use sqlx::{Executor, Sqlite};
+use sqlx::{Executor, Sqlite, SqliteConnection};
 
 impl Store {
     async fn validate_category<'e, E>(
@@ -37,7 +37,7 @@ impl Store {
     }
 
     async fn validate_category_for_update(
-        &self,
+        executor: &mut SqliteConnection,
         entry_id: i64,
         category_id: Option<i64>,
         kind: &str,
@@ -49,14 +49,14 @@ impl Store {
             "SELECT category_id FROM entries WHERE id = ? AND transfer_id IS NULL",
         )
         .bind(entry_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *executor)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("transaction {entry_id} was not found")))?;
         let category = sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT kind, archived_at FROM categories WHERE id = ?",
         )
         .bind(category_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *executor)
         .await?
         .ok_or_else(|| AppError::BadRequest(format!("category {category_id} was not found")))?;
         if category.0 != kind {
@@ -74,12 +74,18 @@ impl Store {
 
     pub async fn create_transaction(&self, request: TransactionRequest) -> AppResult<i64> {
         Self::validate_amount(request.amount_minor)?;
-        Store::load_account(&self.pool, request.account_id).await?;
-        Self::validate_category(&self.pool, request.category_id, request.kind.as_str()).await?;
         let note = Self::clean_note(request.note)?;
         let name = Self::clean_name(request.name, &note, request.kind.as_str())?;
         let occurred_at = Self::clean_timestamp(request.occurred_at)?;
-
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Store::load_account(&mut *transaction, request.account_id).await?;
+        Self::validate_category(
+            &mut *transaction,
+            request.category_id,
+            request.kind.as_str(),
+        )
+        .await?;
+        let label_ids = Store::validate_label_ids(&mut transaction, request.labels).await?;
         let id = sqlx::query_scalar(
             "INSERT INTO entries
                 (kind, account_id, amount_minor, name, category_id, reconciled, note, occurred_at, created_at, transfer_id)
@@ -95,20 +101,28 @@ impl Store {
         .bind(note)
         .bind(occurred_at)
         .bind(Utc::now().to_rfc3339())
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *transaction)
         .await?;
+        Store::replace_entry_labels(&mut transaction, id, label_ids).await?;
+        transaction.commit().await?;
         Ok(id)
     }
 
     pub async fn update_transaction(&self, id: i64, request: TransactionRequest) -> AppResult<()> {
         Self::validate_amount(request.amount_minor)?;
-        Store::load_account(&self.pool, request.account_id).await?;
-        self.validate_category_for_update(id, request.category_id, request.kind.as_str())
-            .await?;
         let note = Self::clean_note(request.note)?;
         let name = Self::clean_name(request.name, &note, request.kind.as_str())?;
         let occurred_at = Self::clean_timestamp(request.occurred_at)?;
-
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Store::load_account(&mut *transaction, request.account_id).await?;
+        Self::validate_category_for_update(
+            &mut transaction,
+            id,
+            request.category_id,
+            request.kind.as_str(),
+        )
+        .await?;
+        let label_ids = Store::validate_label_ids(&mut transaction, request.labels).await?;
         let result = sqlx::query(
             "UPDATE entries
              SET kind = ?, account_id = ?, amount_minor = ?, name = ?, category_id = ?,
@@ -124,13 +138,15 @@ impl Store {
         .bind(note)
         .bind(occurred_at)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!(
                 "transaction {id} was not found"
             )));
         }
+        Store::replace_entry_labels(&mut transaction, id, label_ids).await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -149,6 +165,7 @@ impl Store {
             reconciled: entry.reconciled,
             note: Some(entry.note),
             occurred_at: Some(entry.occurred_at),
+            labels: Some(entry.labels.into_iter().map(|label| label.id).collect()),
         })
         .await
     }

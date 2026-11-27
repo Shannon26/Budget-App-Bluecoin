@@ -49,6 +49,7 @@ export function useOverviewForms(
   const [transactionNote, setTransactionNote] = useState("");
   const [transactionDate, setTransactionDate] = useState(localDateValue());
   const [transactionReconciled, setTransactionReconciled] = useState(false);
+  const [transactionLabelIds, setTransactionLabelIds] = useState<number[]>([]);
 
   const [transferName, setTransferName] = useState("");
   const [transferFrom, setTransferFromState] = useState("");
@@ -67,6 +68,7 @@ export function useOverviewForms(
   const [transferNote, setTransferNote] = useState("");
   const [transferDate, setTransferDate] = useState(localDateValue());
   const [transferReconciled, setTransferReconciled] = useState(false);
+  const [transferLabelIds, setTransferLabelIds] = useState<number[]>([]);
 
   const selectableAccounts = useMemo(
     () => data.accounts.filter(isAccountSelectable),
@@ -118,6 +120,15 @@ export function useOverviewForms(
     transferToSelection.current.initialized = true;
     setTransferToState(`${alternative.id}`);
   }, [selectableAccounts, transferFrom, transferTo]);
+
+  useEffect(() => {
+    setTransactionLabelIds((current) =>
+      current.filter((id) => data.labels.some((label) => label.id === id)),
+    );
+    setTransferLabelIds((current) =>
+      current.filter((id) => data.labels.some((label) => label.id === id)),
+    );
+  }, [data.labels]);
 
   const transactionCategories = useMemo(
     () =>
@@ -203,11 +214,13 @@ export function useOverviewForms(
         reconciled: transactionReconciled,
         note: transactionNote,
         occurred_at: dateTimeValue(transactionDate),
+        labels: transactionLabelIds,
       });
       setTransactionName("");
       setTransactionAmount("");
       setTransactionNote("");
       setTransactionReconciled(false);
+      setTransactionLabelIds([]);
       onMessage(`${transactionKind === "income" ? "Income" : "Expense"} recorded.`);
       await refresh();
     } catch (reason) {
@@ -236,11 +249,13 @@ export function useOverviewForms(
         reconciled: transferReconciled,
         note: transferNote,
         occurred_at: dateTimeValue(transferDate),
+        labels: transferLabelIds,
       });
       setTransferName("");
       setTransferAmount("");
       setTransferNote("");
       setTransferReconciled(false);
+      setTransferLabelIds([]);
       onMessage("Transfer complete. Both balances updated; income and expenses did not change.");
       await refresh();
     } catch (reason) {
@@ -290,6 +305,8 @@ export function useOverviewForms(
     setTransactionDate,
     transactionReconciled,
     setTransactionReconciled,
+    transactionLabelIds,
+    setTransactionLabelIds,
     transactionCategories,
     handleTransaction,
     transferName,
@@ -306,6 +323,8 @@ export function useOverviewForms(
     setTransferDate,
     transferReconciled,
     setTransferReconciled,
+    transferLabelIds,
+    setTransferLabelIds,
     handleTransfer,
   };
 }

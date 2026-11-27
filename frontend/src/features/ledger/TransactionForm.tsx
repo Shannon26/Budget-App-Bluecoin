@@ -1,5 +1,6 @@
 import type { BudgetState } from "../../shared/types";
 import { isAccountSelectable } from "../accounts/accountClassification";
+import LabelMultiSelect from "../labels/LabelMultiSelect";
 import type { OverviewForms } from "../overview/useOverviewForms";
 
 export default function TransactionForm({
@@ -118,6 +119,13 @@ export default function TransactionForm({
             maxLength={500}
           />
         </label>
+        <LabelMultiSelect
+          labels={data.labels}
+          selected={forms.transactionLabelIds}
+          onChange={forms.setTransactionLabelIds}
+          testIdPrefix="transaction-label"
+          disabled={forms.submitting}
+        />
         <label className="check-label">
           <input
             type="checkbox"

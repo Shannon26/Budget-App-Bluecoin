@@ -1,8 +1,8 @@
 use super::FilterDefinition;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, Row};
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LedgerEntry {
     pub id: i64,
     pub kind: String,
@@ -19,6 +19,30 @@ pub struct LedgerEntry {
     pub category_parent_name: Option<String>,
     pub reconciled: bool,
     pub transfer_id: Option<i64>,
+    pub labels: Vec<super::Label>,
+}
+
+impl FromRow<'_, sqlx::sqlite::SqliteRow> for LedgerEntry {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            kind: row.try_get("kind")?,
+            name: row.try_get("name")?,
+            note: row.try_get("note")?,
+            account_id: row.try_get("account_id")?,
+            account_name: row.try_get("account_name")?,
+            counterpart_account_id: row.try_get("counterpart_account_id")?,
+            counterpart_account_name: row.try_get("counterpart_account_name")?,
+            amount_minor: row.try_get("amount_minor")?,
+            occurred_at: row.try_get("occurred_at")?,
+            category_id: row.try_get("category_id")?,
+            category_name: row.try_get("category_name")?,
+            category_parent_name: row.try_get("category_parent_name")?,
+            reconciled: row.try_get("reconciled")?,
+            transfer_id: row.try_get("transfer_id")?,
+            labels: Vec::new(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

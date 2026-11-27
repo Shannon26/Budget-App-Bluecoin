@@ -248,6 +248,7 @@ mod budgets;
 mod categories;
 mod csv_export;
 mod filters;
+mod labels;
 mod ledger;
 mod reports;
 mod transactions;

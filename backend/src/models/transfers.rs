@@ -13,6 +13,8 @@ pub struct TransferRequest {
     pub note: Option<String>,
     #[serde(default)]
     pub occurred_at: Option<String>,
+    #[serde(default)]
+    pub labels: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,5 +1,6 @@
 import type { BudgetState } from "../../shared/types";
 import { isAccountSelectable } from "../accounts/accountClassification";
+import LabelMultiSelect from "../labels/LabelMultiSelect";
 import type { OverviewForms } from "../overview/useOverviewForms";
 
 export default function TransferForm({
@@ -102,6 +103,13 @@ export default function TransferForm({
             maxLength={500}
           />
         </label>
+        <LabelMultiSelect
+          labels={data.labels}
+          selected={forms.transferLabelIds}
+          onChange={forms.setTransferLabelIds}
+          testIdPrefix="transfer-label"
+          disabled={forms.submitting}
+        />
         <label className="check-label">
           <input
             type="checkbox"

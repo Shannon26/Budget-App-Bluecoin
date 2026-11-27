@@ -7,6 +7,7 @@ import type {
   DailySummaryReport,
   FilterDefinition,
   ItemsSummaryReport,
+  Label,
   LedgerEntry,
   LedgerPage,
   MonthlyCategoryBudgets,
@@ -112,6 +113,7 @@ export const api = {
     reconciled: boolean;
     note?: string;
     occurred_at?: string;
+    labels?: number[];
   }) =>
     request<{ id: number }>("/transactions", {
       method: "POST",
@@ -128,6 +130,7 @@ export const api = {
       reconciled: boolean;
       note?: string;
       occurred_at?: string;
+      labels?: number[];
     },
   ) =>
     request<{ ok: boolean }>(`/transactions/${id}`, {
@@ -151,6 +154,7 @@ export const api = {
     reconciled: boolean;
     note?: string;
     occurred_at?: string;
+    labels?: number[];
   }) =>
     request<{ id: number }>("/transfers", {
       method: "POST",
@@ -166,6 +170,7 @@ export const api = {
       reconciled: boolean;
       note?: string;
       occurred_at?: string;
+      labels?: number[];
     },
   ) =>
     request<{ ok: boolean }>(`/transfers/${id}`, {
@@ -230,6 +235,11 @@ export const api = {
       `/category-budgets/${categoryId}?month=${encodeURIComponent(month)}`,
       { method: "DELETE" },
     ),
+  labels: () => request<Label[]>("/labels"),
+  createLabel: (name: string) =>
+    request<Label>("/labels", { method: "POST", body: JSON.stringify({ name }) }),
+  updateLabel: (id: number, name: string) =>
+    request<Label>(`/labels/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
   createFilter: (input: { name: string; definition: FilterDefinition }) =>
     request<SavedFilter>("/filters", {
       method: "POST",

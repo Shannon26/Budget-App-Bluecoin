@@ -16,4 +16,6 @@ pub struct TransactionRequest {
     pub note: Option<String>,
     #[serde(default)]
     pub occurred_at: Option<String>,
+    #[serde(default)]
+    pub labels: Option<Vec<i64>>,
 }

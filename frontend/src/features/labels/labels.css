@@ -1,0 +1,72 @@
+.label-list {
+  display: grid;
+  gap: 10px;
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 17px;
+  border: 1px solid #e1e4da;
+  border-radius: 14px;
+  background: #fbfaf4;
+}
+
+.label-row-actions,
+.label-picker-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.label-picker {
+  min-width: 0;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid #dfe4d9;
+  border-radius: 14px;
+}
+
+.label-picker legend {
+  padding: 0 5px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.label-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid #e1e4da;
+  border-radius: 999px;
+  background: #fffdf7;
+  font-size: 11px;
+}
+
+.entry-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.entry-labels span,
+.detail-labels span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #526b61;
+  background: #e8efe8;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.detail-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: -8px 0 20px;
+}

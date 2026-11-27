@@ -4,4 +4,5 @@
 @import "./features/budgets/budgets.css";
 @import "./features/categories/categories.css";
 @import "./features/reports/reports.css";
+@import "./features/labels/labels.css";
 @import "./styles/responsive.css";

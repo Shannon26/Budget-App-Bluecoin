@@ -18,6 +18,7 @@ impl Store {
         let note = Store::clean_note(request.note)?;
         let name = Store::clean_name(request.name, &note, "Transfer")?;
         let occurred_at = Store::clean_timestamp(request.occurred_at)?;
+        let label_ids = Store::validate_label_ids(&mut *transaction, request.labels).await?;
         let created_at = Utc::now().to_rfc3339();
 
         let from_account = Store::load_account(&mut *transaction, request.from_account_id).await?;
@@ -67,11 +68,12 @@ impl Store {
             .await?;
         }
 
+        Store::replace_transfer_labels(&mut *transaction, transfer_id, label_ids).await?;
         Ok(transfer_id)
     }
 
     pub async fn create_transfer(&self, request: TransferRequest) -> AppResult<TransferResponse> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let id = Self::write_transfer(&mut transaction, request.clone()).await?;
         transaction.commit().await?;
         Ok(TransferResponse {
@@ -83,7 +85,7 @@ impl Store {
     }
 
     pub async fn update_transfer(&self, id: i64, request: TransferRequest) -> AppResult<()> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transfers WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *transaction)
@@ -101,6 +103,7 @@ impl Store {
         let note = Store::clean_note(request.note)?;
         let name = Store::clean_name(request.name, &note, "Transfer")?;
         let occurred_at = Store::clean_timestamp(request.occurred_at)?;
+        let label_ids = Store::validate_label_ids(&mut transaction, request.labels).await?;
         let from = Store::load_account(&mut *transaction, request.from_account_id).await?;
         let to = Store::load_account(&mut *transaction, request.to_account_id).await?;
         if from.currency != to.currency {
@@ -147,6 +150,7 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
         }
+        Store::replace_transfer_labels(&mut transaction, id, label_ids).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -161,6 +165,7 @@ impl Store {
             reconciled: entry.reconciled,
             note: Some(entry.note),
             occurred_at: Some(entry.occurred_at),
+            labels: Some(entry.labels.into_iter().map(|label| label.id).collect()),
         })
         .await
         .map(|response| response.id)

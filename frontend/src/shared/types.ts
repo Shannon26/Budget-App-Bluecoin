@@ -9,6 +9,11 @@ export interface AccountTypeDefinition {
   group: AccountGroup;
 }
 
+export interface Label {
+  id: number;
+  name: string;
+}
+
 export interface AccountMetadata {
   id: number;
   name: string;
@@ -213,6 +218,7 @@ export interface LedgerEntry {
   category_parent_name: string | null;
   reconciled: boolean;
   transfer_id: number | null;
+  labels: Label[];
 }
 
 export interface DailyTotal {
@@ -256,5 +262,6 @@ export interface BudgetState {
   categories: Category[];
   category_totals: CategoryTotal[];
   saved_filters: SavedFilter[];
+  labels: Label[];
   entries: LedgerEntry[];
 }

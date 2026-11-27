@@ -1,5 +1,6 @@
 use super::{
-    AccountTypeDefinition, AccountWithBalance, Category, CategoryTotal, LedgerEntry, SavedFilter,
+    AccountTypeDefinition, AccountWithBalance, Category, CategoryTotal, Label, LedgerEntry,
+    SavedFilter,
 };
 use serde::Serialize;
 use sqlx::FromRow;
@@ -18,5 +19,6 @@ pub struct StateResponse {
     pub categories: Vec<Category>,
     pub category_totals: Vec<CategoryTotal>,
     pub saved_filters: Vec<SavedFilter>,
+    pub labels: Vec<Label>,
     pub entries: Vec<LedgerEntry>,
 }

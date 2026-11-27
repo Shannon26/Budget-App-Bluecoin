@@ -2,6 +2,7 @@ pub(crate) mod accounts;
 pub(crate) mod budgets;
 pub(crate) mod categories;
 pub(crate) mod filters;
+pub(crate) mod labels;
 pub(crate) mod ledger;
 pub(crate) mod reports;
 pub(crate) mod system;

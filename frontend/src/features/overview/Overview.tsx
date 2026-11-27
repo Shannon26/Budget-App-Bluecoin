@@ -8,6 +8,7 @@ import {
   accountTypeDefinition,
   isAccountSelectable,
 } from "../accounts/accountClassification";
+import LabelChips from "../labels/LabelChips";
 import TransactionForm from "../ledger/TransactionForm";
 import TransferForm from "../transfers/TransferForm";
 import { activityDetails } from "./activity";
@@ -286,6 +287,7 @@ export default function Overview({
                     <span>
                       {details.account} · {details.category}
                     </span>
+                    <LabelChips labels={entry.labels} />
                   </div>
                   {entry.reconciled && <span className="reconciled-badge">✓</span>}
                   <time dateTime={entry.occurred_at}>{entry.occurred_at.slice(0, 10)}</time>

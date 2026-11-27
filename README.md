@@ -175,8 +175,12 @@ All amounts are integer minor units.
 | `GET` | `/api/category-budgets?month=YYYY-MM` | Monthly expense spending, category rollups, limits, remaining/over amounts, and archived categories |
 | `PUT` | `/api/category-budgets/:category_id?month=YYYY-MM` | Create/update a monthly category limit from `{ "amount_minor": 500000 }` |
 | `DELETE` | `/api/category-budgets/:category_id?month=YYYY-MM` | Remove a monthly category limit |
+| `GET/POST` | `/api/labels` | List/create reusable labels |
+| `PUT` | `/api/labels/:id` | Rename a reusable label |
 | `GET/POST` | `/api/filters` | List/create named filters |
 | `PUT/DELETE` | `/api/filters/:id` | Update/delete named filter |
+
+Transaction and transfer requests accept optional `labels` arrays. Omitting the array preserves existing assignments on edit; an explicit empty array clears them. Labels are returned on ledger/detail/history entries, copied by duplication, and removed when their owning entry/transfer is deleted. F13 does not expose global label deletion, so historical assignments are preserved. A transfer carries one label set shown on both history sides. F13 intentionally does not add label filtering/reporting or change CSV columns and report totals; those remain F14/F15 work.
 
 The invalid-date correction endpoint uses the same all-month expense semantics as the Budgets warning. It excludes valid dates, income, and transfers, returns authoritative rows/counts/pagination, and intentionally has no daily totals because the dates are unknown.
 

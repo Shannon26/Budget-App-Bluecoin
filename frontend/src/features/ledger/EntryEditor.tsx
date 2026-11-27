@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { api } from "../../shared/api";
 import { parseMinorUnits } from "../../shared/money";
 import Modal from "../../shared/Modal";
+import LabelMultiSelect from "../labels/LabelMultiSelect";
 import type { BudgetState, LedgerEntry, TransactionKind } from "../../shared/types";
 
 export default function EntryEditor({
@@ -34,6 +35,7 @@ export default function EntryEditor({
   const [note, setNote] = useState(entry.note);
   const [date, setDate] = useState(entry.occurred_at.slice(0, 10));
   const [reconciled, setReconciled] = useState(entry.reconciled);
+  const [labelIds, setLabelIds] = useState<number[]>(entry.labels.map((label) => label.id));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sameTransferAccount = isTransfer && accountId === counterpartId;
@@ -67,6 +69,7 @@ export default function EntryEditor({
           reconciled,
           note,
           occurred_at: date ? `${date}T12:00:00` : undefined,
+          labels: labelIds,
         });
       } else {
         await api.updateTransaction(entry.id, {
@@ -78,6 +81,7 @@ export default function EntryEditor({
           reconciled,
           note,
           occurred_at: date ? `${date}T12:00:00` : undefined,
+          labels: labelIds,
         });
       }
       await onSaved();
@@ -216,6 +220,13 @@ export default function EntryEditor({
             Note
             <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} />
           </label>
+          <LabelMultiSelect
+            labels={data.labels}
+            selected={labelIds}
+            onChange={setLabelIds}
+            testIdPrefix="edit-label"
+            disabled={saving}
+          />
           <label className="check-label">
             <input
               type="checkbox"

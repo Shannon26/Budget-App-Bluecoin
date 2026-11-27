@@ -115,6 +115,14 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
                 .delete(routes::budgets::remove_category_budget),
         )
         .route(
+            "/api/labels",
+            get(routes::labels::list_labels).post(routes::labels::create_label),
+        )
+        .route(
+            "/api/labels/:id",
+            axum::routing::put(routes::labels::update_label),
+        )
+        .route(
             "/api/filters",
             get(routes::filters::list_saved_filters).post(routes::filters::create_saved_filter),
         )

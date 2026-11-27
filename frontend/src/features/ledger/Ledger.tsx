@@ -16,6 +16,7 @@ import type {
   FilterDefinition,
   LedgerEntry,
 } from "../../shared/types";
+import LabelChips from "../labels/LabelChips";
 import EntryEditor from "./EntryEditor";
 import { entryPresentation } from "./presentation";
 
@@ -652,6 +653,7 @@ export default function Ledger({
                         <span>
                           {details.account} · {details.category}
                         </span>
+                        <LabelChips labels={entry.labels} />
                       </span>
                       {entry.reconciled && <span className="reconciled-badge">✓ Reconciled</span>}
                       <strong className={`entry-amount ${details.tone}`}>
@@ -717,6 +719,12 @@ export default function Ledger({
               <div><dt>Status</dt><dd>{selected.reconciled ? "Reconciled" : "Unreconciled"}</dd></div>
               {selected.note && <div><dt>Note</dt><dd>{selected.note}</dd></div>}
             </dl>
+            {selected.labels.length > 0 && (
+              <div className="detail-labels">
+                <strong>Labels</strong>
+                <LabelChips labels={selected.labels} />
+              </div>
+            )}
             <div className="detail-actions">
               <button className="primary-button" type="button" disabled={busy} onClick={() => setEditing(selected)}>
                 Edit
