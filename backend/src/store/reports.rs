@@ -799,6 +799,134 @@ impl Store {
         })
     }
 
+    pub async fn cash_flow_trend(
+        &self,
+        month: &str,
+        months: usize,
+    ) -> AppResult<CashFlowTrendReport> {
+        if !(2..=24).contains(&months) {
+            return Err(AppError::BadRequest(
+                "months must be between 2 and 24".to_string(),
+            ));
+        }
+        Self::report_months(month)?;
+        let mut requested = Vec::with_capacity(months);
+        let mut current_month = month.to_string();
+        for index in 0..months {
+            let (start, end) = month_bounds(&current_month).ok_or_else(|| {
+                AppError::BadRequest("trend month is outside the supported calendar".to_string())
+            })?;
+            if !is_valid_calendar_date(&end) {
+                return Err(AppError::BadRequest(
+                    "trend month has no representable end".to_string(),
+                ));
+            }
+            requested.push((current_month.clone(), start, end));
+            if index + 1 < months {
+                current_month = previous_month(&current_month).ok_or_else(|| {
+                    AppError::BadRequest(
+                        "trend range is outside the supported calendar".to_string(),
+                    )
+                })?;
+            }
+        }
+        requested.reverse();
+        let BalanceSheetSnapshot { accounts, entries } = self.balance_sheet_snapshot().await?;
+        let visible: HashSet<i64> = accounts
+            .iter()
+            .filter(|account| !account.hide_from_reports)
+            .map(|account| account.id)
+            .collect();
+        let mut valid_entries = Vec::new();
+        let mut invalid_count = 0_i128;
+        for entry in entries {
+            if !visible.contains(&entry.account_id) {
+                continue;
+            }
+            match date_only(&entry.occurred_at) {
+                Some(date) => valid_entries.push((entry, date)),
+                None => invalid_count += 1,
+            }
+        }
+        let mut legacy_count = 0_i128;
+        for account in accounts.iter().filter(|account| !account.hide_from_reports) {
+            match account.opening_date.as_deref() {
+                None => legacy_count += 1,
+                Some(date) if !is_valid_calendar_date(date) => {
+                    return Err(AppError::Conflict(format!(
+                        "account {} has an invalid opening date",
+                        account.id
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        let mut points = Vec::with_capacity(months);
+        for (month, start, end) in requested {
+            let mut totals = CategoryAmount::default();
+            let mut deltas = HashMap::<i64, i128>::new();
+            for (entry, date) in &valid_entries {
+                if date >= &start && date < &end {
+                    totals.add(&entry.kind, entry.amount_minor);
+                }
+                if date < &end {
+                    let delta = match entry.kind.as_str() {
+                        "income" | "transfer_in" => i128::from(entry.amount_minor),
+                        "expense" | "transfer_out" => -i128::from(entry.amount_minor),
+                        _ => 0,
+                    };
+                    *deltas.entry(entry.account_id).or_default() += delta;
+                }
+            }
+            let mut net_worth = 0_i128;
+            let mut groups = HashMap::<&str, i128>::new();
+            for account in accounts.iter().filter(|account| !account.hide_from_reports) {
+                let opening = if account
+                    .opening_date
+                    .as_deref()
+                    .map_or(true, |date| date < end.as_str())
+                {
+                    i128::from(account.opening_balance_minor)
+                } else {
+                    0
+                };
+                let balance = opening + deltas.get(&account.id).copied().unwrap_or_default();
+                checked_i64(balance, "account balance")?;
+                net_worth += balance;
+                *groups.entry(account.account_group.as_str()).or_default() += balance;
+            }
+            for total in groups.values() {
+                checked_i64(*total, "balance-sheet subtotal")?;
+            }
+            points.push(CashFlowTrendPoint {
+                month,
+                cutoff_date: inclusive_month_end(&end)?,
+                cash_flow: ReportPeriod {
+                    start_date: start,
+                    end_date_exclusive: end,
+                    income_minor: checked_i64(totals.income_minor, "report income")?,
+                    expense_minor: checked_i64(totals.expense_minor, "report expense")?,
+                    net_minor: checked_i64(
+                        totals.income_minor - totals.expense_minor,
+                        "report net earnings",
+                    )?,
+                    income_count: checked_i64(totals.income_count, "report income count")?,
+                    expense_count: checked_i64(totals.expense_count, "report expense count")?,
+                },
+                net_worth_minor: checked_i64(net_worth, "net worth")?,
+            });
+        }
+        Ok(CashFlowTrendReport {
+            month: month.to_string(),
+            points,
+            invalid_date_entry_count: checked_i64(invalid_count, "invalid-date entry count")?,
+            legacy_opening_account_count: checked_i64(
+                legacy_count,
+                "legacy opening account count",
+            )?,
+        })
+    }
+
     pub async fn balance_sheet_report(&self, month: &str) -> AppResult<BalanceSheetReport> {
         let ReportMonths {
             month,

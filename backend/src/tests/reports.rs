@@ -1,5 +1,92 @@
 use super::*;
 
+#[tokio::test]
+async fn cash_flow_trend_reconciles_each_month_with_existing_reports() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_typed_account(
+        &app,
+        "Trend checking",
+        "checking",
+        10_000,
+        Some("2026-02-15"),
+    )
+    .await;
+    let savings = create_typed_account(&app, "Trend savings", "savings", 5_000, None).await;
+    let hidden = create_typed_account(&app, "Trend hidden", "checking", 80_000, None).await;
+    let (status, _) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{hidden}"),
+        json!({"hide_from_reports": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for (kind, account, amount, date) in [
+        ("income", checking, 1_000, "2026-01-30"),
+        ("expense", checking, 400, "2026-02-28"),
+        ("income", savings, 300, "2026-03-01"),
+        ("expense", hidden, 900, "2026-02-10"),
+    ] {
+        create_entry_at(&app, kind, account, amount, "trend", None, date).await;
+    }
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": checking, "to_account_id": savings,
+            "amount_minor": 600, "name": "transfer", "occurred_at": "2026-02-28T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    sqlx::query("INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id) VALUES ('expense', ?, 100, 'invalid', '', 'bad-date', '2026-01-01', NULL)")
+        .bind(checking).execute(&pool).await.unwrap();
+    let (status, trend) = send_json(
+        &app,
+        "GET",
+        "/api/reports/cash-flow-trend?month=2026-03&months=3",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{trend}");
+    assert_eq!(trend["invalid_date_entry_count"], 1);
+    assert_eq!(trend["legacy_opening_account_count"], 1);
+    for point in trend["points"].as_array().unwrap() {
+        let month = point["month"].as_str().unwrap();
+        let (_, earnings) = report(&app, month).await;
+        let (_, balance) = balance_report(&app, month).await;
+        assert_eq!(point["cash_flow"], earnings["current"], "{month}");
+        assert_eq!(
+            point["net_worth_minor"], balance["current_net_worth_minor"],
+            "{month}"
+        );
+    }
+    for query in [
+        "month=2026-03&months=1",
+        "month=0001-02&months=3",
+        "month=9999-12&months=2",
+    ] {
+        let (status, _) = send_json(
+            &app,
+            "GET",
+            &format!("/api/reports/cash-flow-trend?{query}"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    create_typed_account(&app, "Trend overflow", "checking", i64::MAX, None).await;
+    let (status, _) = send_json(
+        &app,
+        "GET",
+        "/api/reports/cash-flow-trend?month=2026-03&months=3",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
 async fn report(app: &Router, month: &str) -> (StatusCode, Value) {
     send_json(
         app,

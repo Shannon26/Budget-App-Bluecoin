@@ -3,6 +3,7 @@ import { api } from "./shared/api";
 import { localDateValue } from "./shared/date";
 import type { BudgetState } from "./shared/types";
 import BalanceSheet from "./features/reports/BalanceSheet";
+import CashFlowTrend from "./features/reports/CashFlowTrend";
 import CreditCardSummary from "./features/reports/CreditCardSummary";
 import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
@@ -25,7 +26,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "label-report" | "balance" | "cards";
+type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "label-report" | "balance" | "cards" | "cash-flow";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -170,6 +171,15 @@ export default function App() {
           Balance Sheet
         </button>
         <button
+          data-testid="nav-cash-flow"
+          className={activeTab === "cash-flow" ? "active" : ""}
+          aria-current={activeTab === "cash-flow" ? "page" : undefined}
+          type="button"
+          onClick={() => setActiveTab("cash-flow")}
+        >
+          Cash Flow &amp; Net Worth
+        </button>
+        <button
           data-testid="nav-card-summary"
           className={activeTab === "cards" ? "active" : ""}
           aria-current={activeTab === "cards" ? "page" : undefined}
@@ -273,6 +283,12 @@ export default function App() {
         {activeTab === "balance" && (
           <section className="panel ledger-panel">
             <BalanceSheet />
+          </section>
+        )}
+
+        {activeTab === "cash-flow" && (
+          <section className="panel ledger-panel">
+            <CashFlowTrend />
           </section>
         )}
 

@@ -42,6 +42,18 @@ pub(crate) async fn balance_sheet(
     Ok(Json(state.store.balance_sheet_report(&query.month).await?))
 }
 
+pub(crate) async fn cash_flow_trend(
+    State(state): State<AppState>,
+    Query(query): Query<CashFlowTrendQuery>,
+) -> AppResult<Json<CashFlowTrendReport>> {
+    Ok(Json(
+        state
+            .store
+            .cash_flow_trend(&query.month, query.months)
+            .await?,
+    ))
+}
+
 pub(crate) async fn credit_card(
     State(state): State<AppState>,
     Query(query): Query<CreditCardReportQuery>,

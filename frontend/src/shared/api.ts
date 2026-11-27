@@ -4,6 +4,7 @@ import type {
   BalanceSheetReport,
   BudgetState,
   Category,
+  CashFlowTrendReport,
   CreditCardReport,
   DailySummaryReport,
   FilterDefinition,
@@ -77,6 +78,8 @@ export const api = {
     request<DailySummaryReport>(`/reports/daily-summary?anchor_date=${encodeURIComponent(anchorDate)}`),
   balanceSheet: (month: string) =>
     request<BalanceSheetReport>(`/reports/balance-sheet?month=${encodeURIComponent(month)}`),
+  cashFlowTrend: (month: string, months: number) =>
+    request<CashFlowTrendReport>(`/reports/cash-flow-trend?month=${encodeURIComponent(month)}&months=${months}`),
   creditCard: (accountId: number, anchorDate: string) =>
     request<CreditCardReport>(
       `/reports/credit-card?account_id=${accountId}&anchor_date=${encodeURIComponent(anchorDate)}`,

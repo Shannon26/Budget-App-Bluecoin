@@ -57,6 +57,20 @@ export interface ReportPeriod {
   expense_count: number;
 }
 
+export interface CashFlowTrendPoint {
+  month: string;
+  cutoff_date: string;
+  cash_flow: ReportPeriod;
+  net_worth_minor: number;
+}
+
+export interface CashFlowTrendReport {
+  month: string;
+  points: CashFlowTrendPoint[];
+  invalid_date_entry_count: number;
+  legacy_opening_account_count: number;
+}
+
 export interface ReportMetricValues {
   direct_minor: number;
   rollup_minor: number;

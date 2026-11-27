@@ -28,6 +28,28 @@ pub struct BalanceSheetReportQuery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct CashFlowTrendQuery {
+    pub month: String,
+    pub months: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CashFlowTrendPoint {
+    pub month: String,
+    pub cutoff_date: String,
+    pub cash_flow: ReportPeriod,
+    pub net_worth_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CashFlowTrendReport {
+    pub month: String,
+    pub points: Vec<CashFlowTrendPoint>,
+    pub invalid_date_entry_count: i64,
+    pub legacy_opening_account_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreditCardReportQuery {
     pub account_id: i64,
     pub anchor_date: String,
