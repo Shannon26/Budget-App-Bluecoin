@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../../shared/api";
 import { parseMinorUnits } from "../../shared/money";
+import Modal from "../../shared/Modal";
 import type { BudgetState, LedgerEntry, TransactionKind } from "../../shared/types";
 
 export default function EntryEditor({
@@ -89,14 +90,13 @@ export default function EntryEditor({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="modal-card" role="dialog" aria-modal="true" aria-label="Edit entry">
+    <Modal label="Edit entry" onClose={onClose} dismissible={!saving}>
         <div className="panel-heading">
           <div>
             <p className="section-kicker">{isTransfer ? "Transfer" : "Transaction"}</p>
             <h2>Edit entry</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close editor">
+          <button className="icon-button" type="button" onClick={onClose} disabled={saving} aria-label="Close editor">
             ×
           </button>
         </div>
@@ -110,6 +110,7 @@ export default function EntryEditor({
             Name
             <input
               data-testid="edit-name"
+              data-autofocus
               value={name}
               onChange={(event) => setName(event.target.value)}
               required
@@ -231,7 +232,6 @@ export default function EntryEditor({
             {saving ? "Saving…" : "Save changes"}
           </button>
         </form>
-      </section>
-    </div>
+    </Modal>
   );
 }

@@ -9,6 +9,7 @@ import {
 } from "react";
 import { api } from "../../shared/api";
 import { formatMinor, parseMinorUnits } from "../../shared/money";
+import Modal from "../../shared/Modal";
 import type {
   BudgetState,
   DailyTotal,
@@ -360,7 +361,7 @@ export default function Ledger({
   }
 
   async function permanentDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || busy) return;
     setBusy(true);
     try {
       if (deleteTarget.kind === "transfer" || deleteTarget.kind === "transfer_in" || deleteTarget.kind === "transfer_out") {
@@ -652,14 +653,20 @@ export default function Ledger({
       )}
 
       {selected && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal-card detail-card" role="dialog" aria-modal="true" aria-label="Entry details">
+        <Modal
+          label="Entry details"
+          className="detail-card"
+          dismissible={!busy}
+          onClose={() => {
+            if (!busy) setSelected(null);
+          }}
+        >
             <div className="panel-heading">
               <div>
                 <p className="section-kicker">{entryPresentation(selected).label}</p>
                 <h2>{selected.name || entryPresentation(selected).label}</h2>
               </div>
-              <button className="icon-button" type="button" onClick={() => setSelected(null)} aria-label="Close details">
+              <button className="icon-button" type="button" onClick={() => setSelected(null)} disabled={busy} aria-label="Close details">
                 ×
               </button>
             </div>
@@ -681,7 +688,7 @@ export default function Ledger({
               {selected.note && <div><dt>Note</dt><dd>{selected.note}</dd></div>}
             </dl>
             <div className="detail-actions">
-              <button className="primary-button" type="button" onClick={() => setEditing(selected)}>
+              <button className="primary-button" type="button" disabled={busy} onClick={() => setEditing(selected)}>
                 Edit
               </button>
               <button className="secondary-button" type="button" disabled={busy} onClick={() => void duplicate(selected)}>
@@ -690,12 +697,11 @@ export default function Ledger({
               <button className="secondary-button" type="button" disabled={busy} onClick={() => void toggleReconciled(selected)}>
                 {selected.reconciled ? "Mark unreconciled" : "Mark reconciled"}
               </button>
-              <button className="danger-button" type="button" onClick={() => setDeleteTarget(selected)}>
+              <button className="danger-button" type="button" disabled={busy} onClick={() => setDeleteTarget(selected)}>
                 Delete
               </button>
             </div>
-          </section>
-        </div>
+        </Modal>
       )}
 
       {editing && (
@@ -713,8 +719,14 @@ export default function Ledger({
       )}
 
       {deleteTarget && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal-card confirm-card" role="dialog" aria-modal="true" aria-label="Confirm permanent deletion">
+        <Modal
+          label="Confirm permanent deletion"
+          className="confirm-card"
+          dismissible={!busy}
+          onClose={() => {
+            if (!busy) setDeleteTarget(null);
+          }}
+        >
             <p className="section-kicker">Permanent action</p>
             <h2>Delete this entry?</h2>
             <p>
@@ -726,12 +738,11 @@ export default function Ledger({
               <button className="danger-button" data-testid="confirm-delete" type="button" disabled={busy} onClick={() => void permanentDelete()}>
                 Permanently delete
               </button>
-              <button className="secondary-button" type="button" onClick={() => setDeleteTarget(null)}>
+              <button className="secondary-button" data-autofocus type="button" disabled={busy} onClick={() => setDeleteTarget(null)}>
                 Cancel
               </button>
             </div>
-          </section>
-        </div>
+        </Modal>
       )}
     </section>
   );

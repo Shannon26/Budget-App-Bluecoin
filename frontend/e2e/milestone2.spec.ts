@@ -2046,3 +2046,147 @@ test("Daily Summary charts seven days and keeps averages and states scoped to it
     for (const entryId of entryIds) await request.delete(`/api/transactions/${entryId}`);
   }
 });
+
+test("Ledger dialogs trap and restore keyboard focus and guard busy dismissal", async ({
+  page,
+  request,
+}) => {
+  const accountResponse = await request.post("/api/accounts", {
+    data: { name: "Q06 keyboard account", currency: "INR", opening_balance_minor: 10000 },
+  });
+  expect(accountResponse.ok()).toBeTruthy();
+  const accountId = (await accountResponse.json()).id as number;
+  const entryResponse = await request.post("/api/transactions", {
+    data: {
+      kind: "expense",
+      account_id: accountId,
+      amount_minor: 1234,
+      name: "Q06 keyboard entry",
+      category_id: null,
+      occurred_at: "2033-01-15T12:00:00",
+    },
+  });
+  expect(entryResponse.ok()).toBeTruthy();
+  const entryId = (await entryResponse.json()).id as number;
+
+  let updateCalls = 0;
+  let deleteCalls = 0;
+  const releaseDelete = deferred();
+  const deleteStarted = deferred();
+  const deleteFinished = deferred();
+  await page.route(`**/api/transactions/${entryId}`, async (route) => {
+    if (route.request().method() === "PUT") {
+      updateCalls += 1;
+      await route.continue();
+      return;
+    }
+    if (route.request().method() === "DELETE") {
+      deleteCalls += 1;
+      deleteStarted.resolve();
+      const response = await route.fetch();
+      await releaseDelete.promise;
+      await route.fulfill({ response });
+      deleteFinished.resolve();
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByTestId("nav-ledger").click();
+  await expect(page.getByTestId("nav-ledger")).toHaveAttribute("aria-current", "page");
+  const row = page.getByTestId(`ledger-row-expense-${entryId}`);
+  await expect(row).toBeVisible();
+  await row.focus();
+  await page.keyboard.press("Enter");
+  const details = page.getByRole("dialog", { name: "Entry details" });
+  await expect(details).toBeVisible();
+  await expect(details.getByRole("button", { name: "Close details" })).toBeFocused();
+  await expect(page.locator(".app-shell")).toHaveAttribute("inert", "");
+
+  const deleteButton = details.getByRole("button", { name: "Delete", exact: true });
+  await deleteButton.focus();
+  await page.keyboard.press("Tab");
+  await expect(details.getByRole("button", { name: "Close details" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(deleteButton).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(details).toBeHidden();
+  await expect(row).toBeFocused();
+  await expect(page.locator(".app-shell")).not.toHaveAttribute("inert", "");
+
+  await row.focus();
+  await page.keyboard.press("Enter");
+  await details.getByRole("button", { name: "Edit", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit entry" });
+  await expect(editor.getByTestId("edit-name")).toBeFocused();
+  await editor.getByTestId("edit-name").fill("Q06 unsaved name");
+  await page.keyboard.press("Escape");
+  await expect(editor).toBeHidden();
+  await expect(details.getByRole("button", { name: "Edit", exact: true })).toBeFocused();
+  await expect(details.getByRole("heading", { name: "Q06 keyboard entry" })).toBeVisible();
+  expect(updateCalls).toBe(0);
+  await page.keyboard.press("Escape");
+  await expect(details).toBeHidden();
+  await expect(row).toBeFocused();
+
+  await row.focus();
+  await page.keyboard.press("Enter");
+  await deleteButton.click();
+  const confirmation = page.getByRole("dialog", { name: "Confirm permanent deletion" });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toBeHidden();
+  await expect(deleteButton).toBeFocused();
+  await expect(row).toHaveCount(1);
+
+  await deleteButton.click();
+  await confirmation.getByTestId("confirm-delete").click();
+  await deleteStarted.promise;
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(deleteCalls).toBe(1);
+  releaseDelete.resolve();
+  await deleteFinished.promise;
+  await expect(confirmation).toBeHidden();
+  await expect(row).toHaveCount(0);
+  await expect(page.getByTestId("nav-ledger")).toBeFocused();
+  await expect(page.locator(".app-shell")).not.toHaveAttribute("inert", "");
+});
+
+test("Category editor keyboard flow and navigation current marker stay accessible", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("nav-categories").click();
+  await expect(page.getByTestId("nav-categories")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("nav-overview")).not.toHaveAttribute("aria-current");
+  const newCategory = page.getByTestId("new-category");
+  await newCategory.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Category editor" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId("category-name")).toBeFocused();
+  await expect(page.locator(".app-shell")).toHaveAttribute("inert", "");
+
+  const save = dialog.getByTestId("save-category");
+  await save.focus();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Close category editor" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(save).toBeFocused();
+  await dialog.getByTestId("category-name").fill("Q06 unsaved category");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(newCategory).toBeFocused();
+  await expect(page.getByText("Q06 unsaved category", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".app-shell")).not.toHaveAttribute("inert", "");
+
+  await page.getByTestId("nav-items-summary").click();
+  await expect(page.getByTestId("nav-items-summary")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("nav-categories")).not.toHaveAttribute("aria-current");
+  await page.getByTestId("nav-overview").click();
+  await expect(page.getByTestId("nav-overview")).toHaveAttribute("aria-current", "page");
+});

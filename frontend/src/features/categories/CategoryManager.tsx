@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../../shared/api";
 import { formatMinor } from "../../shared/money";
+import Modal from "../../shared/Modal";
 import type { BudgetState, Category, TransactionKind } from "../../shared/types";
 
 interface CategoryManagerProps {
@@ -218,14 +219,19 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
       </div>
 
       {form && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal-card" role="dialog" aria-modal="true" aria-label="Category editor">
+        <Modal
+          label="Category editor"
+          dismissible={!saving}
+          onClose={() => {
+            if (!saving) setForm(null);
+          }}
+        >
             <div className="panel-heading">
               <div>
                 <p className="section-kicker">Catalog</p>
                 <h2>{form.id ? "Edit category" : "New category"}</h2>
               </div>
-              <button className="icon-button" type="button" onClick={() => setForm(null)} aria-label="Close category editor">
+              <button className="icon-button" type="button" onClick={() => { if (!saving) setForm(null); }} disabled={saving} aria-label="Close category editor">
                 ×
               </button>
             </div>
@@ -241,6 +247,7 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
                 Name
                 <input
                   data-testid="category-name"
+                  data-autofocus
                   value={form.name}
                   onChange={(event) => setForm({ ...form, name: event.target.value })}
                   required
@@ -322,8 +329,7 @@ export default function CategoryManager({ data, refresh, onMessage }: CategoryMa
                 {saving ? "Saving…" : form.id ? "Save category" : "Create category"}
               </button>
             </form>
-          </section>
-        </div>
+        </Modal>
       )}
     </section>
   );

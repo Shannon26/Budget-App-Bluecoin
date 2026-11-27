@@ -77,6 +77,7 @@ export default function App() {
         <button
           data-testid="nav-overview"
           className={activeTab === "overview" ? "active" : ""}
+          aria-current={activeTab === "overview" ? "page" : undefined}
           type="button"
           onClick={() => {
             setActiveTab("overview");
@@ -88,6 +89,7 @@ export default function App() {
         <button
           data-testid="nav-ledger"
           className={activeTab === "ledger" ? "active" : ""}
+          aria-current={activeTab === "ledger" ? "page" : undefined}
           type="button"
           onClick={() => setActiveTab("ledger")}
         >
@@ -96,6 +98,7 @@ export default function App() {
         <button
           data-testid="nav-categories"
           className={activeTab === "categories" ? "active" : ""}
+          aria-current={activeTab === "categories" ? "page" : undefined}
           type="button"
           onClick={() => setActiveTab("categories")}
         >
@@ -104,6 +107,7 @@ export default function App() {
         <button
           data-testid="nav-budgets"
           className={activeTab === "budgets" ? "active" : ""}
+          aria-current={activeTab === "budgets" ? "page" : undefined}
           type="button"
           onClick={() => setActiveTab("budgets")}
         >
@@ -112,6 +116,7 @@ export default function App() {
         <button
           data-testid="nav-net-earnings"
           className={activeTab === "reports" ? "active" : ""}
+          aria-current={activeTab === "reports" ? "page" : undefined}
           type="button"
           onClick={() => setActiveTab("reports")}
         >
@@ -120,6 +125,7 @@ export default function App() {
         <button
           data-testid="nav-items-summary"
           className={activeTab === "items" ? "active" : ""}
+          aria-current={activeTab === "items" ? "page" : undefined}
           type="button"
           onClick={() => setActiveTab("items")}
         >
