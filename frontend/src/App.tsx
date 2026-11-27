@@ -10,6 +10,7 @@ import LabelsManager from "./features/labels/LabelsManager";
 import Ledger from "./features/ledger/Ledger";
 import Overview from "./features/overview/Overview";
 import ItemsSummary from "./features/reports/ItemsSummary";
+import LabelReport from "./features/reports/LabelReport";
 import NetEarnings from "./features/reports/NetEarnings";
 import { useOverviewForms } from "./features/overview/useOverviewForms";
 
@@ -24,7 +25,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "balance" | "cards";
+type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "label-report" | "balance" | "cards";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -151,6 +152,15 @@ export default function App() {
           Items Summary
         </button>
         <button
+          data-testid="nav-label-report"
+          className={activeTab === "label-report" ? "active" : ""}
+          aria-current={activeTab === "label-report" ? "page" : undefined}
+          type="button"
+          onClick={() => setActiveTab("label-report")}
+        >
+          Label Report
+        </button>
+        <button
           data-testid="nav-balance-sheet"
           className={activeTab === "balance" ? "active" : ""}
           aria-current={activeTab === "balance" ? "page" : undefined}
@@ -251,6 +261,12 @@ export default function App() {
         {activeTab === "items" && (
           <section className="panel ledger-panel">
             <ItemsSummary />
+          </section>
+        )}
+
+        {activeTab === "label-report" && (
+          <section className="panel ledger-panel">
+            <LabelReport />
           </section>
         )}
 

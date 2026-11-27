@@ -336,6 +336,26 @@
   text-align: center !important;
 }
 
+.label-report-section {
+  margin-bottom: 18px;
+}
+
+.label-report-table {
+  min-width: 640px;
+}
+
+.label-report-synthetic {
+  display: block;
+  margin-top: 3px;
+  color: #819087;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.label-report-rules {
+  margin-top: 20px;
+}
+
 .balance-summary-table {
   min-width: 640px;
 }

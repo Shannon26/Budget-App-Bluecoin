@@ -20,6 +20,58 @@ async fn items_report(app: &Router, month: &str) -> (StatusCode, Value) {
     .await
 }
 
+async fn label_report(app: &Router, month: &str) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "GET",
+        &format!("/api/reports/labels?month={month}"),
+        json!({}),
+    )
+    .await
+}
+
+async fn create_report_label(app: &Router, name: &str) -> i64 {
+    let (status, body) = send_json(app, "POST", "/api/labels", json!({ "name": name })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_i64().unwrap()
+}
+
+async fn create_labelled_entry_at(
+    app: &Router,
+    kind: &str,
+    account_id: i64,
+    amount_minor: i64,
+    name: &str,
+    labels: &[i64],
+    occurred_at: &str,
+) -> i64 {
+    let (status, body) = send_json(
+        app,
+        "POST",
+        "/api/transactions",
+        json!({
+            "kind": kind,
+            "account_id": account_id,
+            "amount_minor": amount_minor,
+            "name": name,
+            "labels": labels,
+            "occurred_at": occurred_at
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_i64().unwrap()
+}
+
+fn label_report_row<'a>(body: &'a Value, label_id: Option<i64>) -> &'a Value {
+    body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["label_id"] == json!(label_id))
+        .unwrap()
+}
+
 async fn daily_report(app: &Router, anchor_date: &str) -> (StatusCode, Value) {
     send_json(
         app,
@@ -855,6 +907,413 @@ async fn items_summary_empty_invalid_month_and_overflow_are_explicit() {
         body["error"],
         "report income item total is outside the supported integer range"
     );
+}
+
+#[tokio::test]
+async fn ordinary_reports_do_not_read_label_tables() {
+    let (app, pool, _directory) = setup().await;
+    let account = create_account(&app, "Ordinary report isolation", 0).await;
+    let label = create_report_label(&app, "Isolation label").await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        account,
+        250,
+        "Isolation expense",
+        &[label],
+        "2026-11-10",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        account,
+        500,
+        "Isolation income",
+        None,
+        "2026-11-10",
+    )
+    .await;
+
+    // Any ordinary report query that still reads label state now fails.
+    sqlx::query("ALTER TABLE entry_labels RENAME TO entry_labels_unavailable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE labels RENAME TO labels_unavailable")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, net) = report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(net["current"]["income_minor"], 500);
+    assert_eq!(net["current"]["expense_minor"], 250);
+    assert_eq!(net["current"]["net_minor"], 250);
+
+    let (status, items) = items_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{items}");
+    assert_eq!(items["current"]["income_minor"], 500);
+    assert_eq!(items["current"]["expense_minor"], 250);
+    assert_eq!(items["income_items"][0]["name"], "Isolation income");
+    assert_eq!(items["expense_items"][0]["name"], "Isolation expense");
+
+    let (status, daily) = daily_report(&app, "2026-11-10").await;
+    assert_eq!(status, StatusCode::OK, "{daily}");
+    assert_eq!(daily["days"][6]["date"], "2026-11-10");
+    assert_eq!(daily["days"][6]["expense_minor"], 250);
+}
+
+#[tokio::test]
+async fn label_report_conserves_paise_with_stable_id_leftovers_renames_and_no_labels_identity() {
+    let (app, _pool, _directory) = setup().await;
+    let account = create_account(&app, "Label allocation opening balance", 900_000).await;
+    let first = create_report_label(&app, "Zulu").await;
+    let second = create_report_label(&app, "Alpha").await;
+    let user_no_labels = create_report_label(&app, "No Labels").await;
+    let unused = create_report_label(&app, "Unused").await;
+
+    create_entry_at(
+        &app,
+        "expense",
+        account,
+        101,
+        "Unlabelled",
+        None,
+        "2026-11-01",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "income",
+        account,
+        1_000,
+        "Single label",
+        &[user_no_labels],
+        "2026-11-02",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        account,
+        100,
+        "Three labels",
+        &[second, first, user_no_labels],
+        "2026-11-03",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "income",
+        account,
+        5,
+        "Two labels",
+        &[second, first],
+        "2026-11-04",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        account,
+        2,
+        "More labels than paise",
+        &[user_no_labels, second, first],
+        "2026-11-05",
+    )
+    .await;
+
+    let (status, body) = label_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["month"], "2026-11");
+    assert_eq!(body["current"]["start_date"], "2026-11-01");
+    assert_eq!(body["current"]["end_date_exclusive"], "2026-12-01");
+    assert_eq!(body["current"]["income_minor"], 1_005);
+    assert_eq!(body["current"]["expense_minor"], 203);
+    assert_eq!(body["current"]["net_minor"], 802);
+    assert_eq!(body["current"]["income_count"], 2);
+    assert_eq!(body["current"]["expense_count"], 3);
+    assert_eq!(body["invalid_date_entry_count"], 0);
+
+    let names = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Alpha", "No Labels", "Unused", "Zulu", "No Labels"]);
+    assert_eq!(label_report_row(&body, Some(first))["income_minor"], 3);
+    assert_eq!(label_report_row(&body, Some(first))["expense_minor"], 35);
+    assert_eq!(label_report_row(&body, Some(first))["net_minor"], -32);
+    assert_eq!(label_report_row(&body, Some(second))["income_minor"], 2);
+    assert_eq!(label_report_row(&body, Some(second))["expense_minor"], 34);
+    assert_eq!(
+        label_report_row(&body, Some(user_no_labels))["income_minor"],
+        1_000
+    );
+    assert_eq!(
+        label_report_row(&body, Some(user_no_labels))["expense_minor"],
+        33
+    );
+    assert_eq!(
+        label_report_row(&body, Some(user_no_labels))["is_no_labels"],
+        false
+    );
+    assert_eq!(label_report_row(&body, Some(unused))["income_minor"], 0);
+    assert_eq!(label_report_row(&body, Some(unused))["expense_minor"], 0);
+    assert_eq!(label_report_row(&body, None)["name"], "No Labels");
+    assert_eq!(label_report_row(&body, None)["is_no_labels"], true);
+    assert_eq!(label_report_row(&body, None)["income_minor"], 0);
+    assert_eq!(label_report_row(&body, None)["expense_minor"], 101);
+    assert_eq!(label_report_row(&body, None)["net_minor"], -101);
+
+    let income_sum = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["income_minor"].as_i64().unwrap())
+        .sum::<i64>();
+    let expense_sum = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["expense_minor"].as_i64().unwrap())
+        .sum::<i64>();
+    assert_eq!(
+        income_sum,
+        body["current"]["income_minor"].as_i64().unwrap()
+    );
+    assert_eq!(
+        expense_sum,
+        body["current"]["expense_minor"].as_i64().unwrap()
+    );
+
+    // Renaming changes display order, never the stable-ID leftover allocation.
+    for (id, name) in [(first, "Aardvark"), (second, "Zebra")] {
+        let (status, body) = send_json(
+            &app,
+            "PUT",
+            &format!("/api/labels/{id}"),
+            json!({ "name": name }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, renamed) = label_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["rows"][0]["label_id"], first);
+    assert_eq!(renamed["rows"][0]["name"], "Aardvark");
+    assert_eq!(renamed["rows"][0]["income_minor"], 3);
+    assert_eq!(renamed["rows"][0]["expense_minor"], 35);
+    assert_eq!(label_report_row(&renamed, Some(second))["name"], "Zebra");
+    assert_eq!(label_report_row(&renamed, Some(second))["income_minor"], 2);
+    assert_eq!(
+        label_report_row(&renamed, Some(second))["expense_minor"],
+        34
+    );
+    assert_eq!(
+        label_report_row(&renamed, Some(user_no_labels))["is_no_labels"],
+        false
+    );
+    assert_eq!(label_report_row(&renamed, None)["is_no_labels"], true);
+}
+
+#[tokio::test]
+async fn label_report_matches_net_earnings_visibility_dates_transfers_and_invalid_date_rules() {
+    let (app, pool, _directory) = setup().await;
+    let visible = create_account(&app, "Label report visible", 1_000_000).await;
+    let picker_hidden = create_account(&app, "Label report picker hidden", 0).await;
+    let report_hidden = create_account(&app, "Label report report hidden", 0).await;
+    let destination = create_account(&app, "Label report transfer destination", 0).await;
+    for (account_id, update) in [
+        (picker_hidden, json!({ "hide_from_selection": true })),
+        (report_hidden, json!({ "hide_from_reports": true })),
+    ] {
+        let (status, body) =
+            send_json(&app, "PUT", &format!("/api/accounts/{account_id}"), update).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let work = create_report_label(&app, "Work").await;
+
+    create_labelled_entry_at(
+        &app,
+        "income",
+        visible,
+        999,
+        "Prior boundary",
+        &[work],
+        "2026-10-31T23:59:59Z",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        visible,
+        11,
+        "Current start",
+        &[work],
+        "2026-11-01",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "income",
+        visible,
+        22,
+        "Current end",
+        &[work],
+        "2026-11-30T23:59:59+05:30",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        visible,
+        33,
+        "Next month",
+        &[work],
+        "2026-12-01",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        picker_hidden,
+        44,
+        "Picker only",
+        &[work],
+        "2026-11-10",
+    )
+    .await;
+    create_labelled_entry_at(
+        &app,
+        "income",
+        report_hidden,
+        55,
+        "Report hidden",
+        &[work],
+        "2026-11-10",
+    )
+    .await;
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": visible,
+            "to_account_id": destination,
+            "amount_minor": 66,
+            "name": "Excluded labelled transfer",
+            "labels": [work],
+            "occurred_at": "2026-11-10T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for (kind, name, occurred_at) in [
+        ("income", "Invalid visible income", "not-a-date"),
+        ("expense", "Invalid visible expense", "2026-02-30T12:00:00Z"),
+    ] {
+        sqlx::query(
+            "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+             VALUES (?, ?, 100, ?, 'legacy invalid', ?, '2026-11-01T00:00:00Z', NULL)",
+        )
+        .bind(kind)
+        .bind(visible)
+        .bind(name)
+        .bind(occurred_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+         VALUES ('income', ?, 100, 'Invalid hidden', 'legacy invalid', 'bad-date', '2026-11-01T00:00:00Z', NULL)",
+    )
+    .bind(report_hidden)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = label_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["current"]["income_minor"], 22);
+    assert_eq!(body["current"]["expense_minor"], 55);
+    assert_eq!(body["current"]["net_minor"], -33);
+    assert_eq!(body["current"]["income_count"], 1);
+    assert_eq!(body["current"]["expense_count"], 2);
+    assert_eq!(body["invalid_date_entry_count"], 2);
+    assert_eq!(label_report_row(&body, Some(work))["income_minor"], 22);
+    assert_eq!(label_report_row(&body, Some(work))["expense_minor"], 55);
+    assert_eq!(label_report_row(&body, None)["expense_minor"], 0);
+    assert!(!body.to_string().contains("Excluded labelled transfer"));
+
+    let (status, net) = report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(
+        net["current"]["income_minor"],
+        body["current"]["income_minor"]
+    );
+    assert_eq!(
+        net["current"]["expense_minor"],
+        body["current"]["expense_minor"]
+    );
+    assert_eq!(net["current"]["net_minor"], body["current"]["net_minor"]);
+
+    let (status, prior) = label_report(&app, "2026-10").await;
+    assert_eq!(status, StatusCode::OK, "{prior}");
+    assert_eq!(prior["current"]["income_minor"], 999);
+    assert_eq!(prior["current"]["expense_minor"], 0);
+    assert_eq!(label_report_row(&prior, Some(work))["income_minor"], 999);
+}
+
+#[tokio::test]
+async fn label_report_empty_month_bounds_and_overflow_are_explicit() {
+    let (app, _pool, _directory) = setup().await;
+    let account = create_account(&app, "Label report empty and overflow", 0).await;
+    let work = create_report_label(&app, "Overflow label").await;
+
+    let (status, empty) = label_report(&app, "2030-05").await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    assert_eq!(empty["current"]["income_minor"], 0);
+    assert_eq!(empty["current"]["expense_minor"], 0);
+    assert_eq!(empty["current"]["net_minor"], 0);
+    assert_eq!(empty["current"]["income_count"], 0);
+    assert_eq!(empty["current"]["expense_count"], 0);
+    assert_eq!(empty["invalid_date_entry_count"], 0);
+    assert_eq!(empty["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(label_report_row(&empty, Some(work))["income_minor"], 0);
+    assert_eq!(label_report_row(&empty, Some(work))["expense_minor"], 0);
+    assert_eq!(label_report_row(&empty, None)["is_no_labels"], true);
+    assert_eq!(label_report_row(&empty, None)["income_minor"], 0);
+    assert_eq!(label_report_row(&empty, None)["expense_minor"], 0);
+
+    for month in ["2026-13", "2026-00", "0001-01", "9999-12", "not-a-month"] {
+        let (status, body) = label_report(&app, month).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{month}: {body}");
+    }
+    for month in ["0001-02", "9999-11"] {
+        let (status, body) = label_report(&app, month).await;
+        assert_eq!(status, StatusCode::OK, "{month}: {body}");
+        assert_eq!(body["month"], month);
+    }
+
+    for index in 0..2 {
+        create_labelled_entry_at(
+            &app,
+            "income",
+            account,
+            i64::MAX,
+            &format!("Overflow {index}"),
+            &[work],
+            "2026-11-10",
+        )
+        .await;
+    }
+    let (status, body) = label_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("integer range"));
 }
 
 #[tokio::test]

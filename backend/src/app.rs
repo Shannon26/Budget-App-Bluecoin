@@ -88,6 +88,7 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             "/api/reports/items-summary",
             get(routes::reports::items_summary),
         )
+        .route("/api/reports/labels", get(routes::reports::label_report))
         .route(
             "/api/reports/daily-summary",
             get(routes::reports::daily_summary),

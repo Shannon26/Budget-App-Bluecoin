@@ -9,6 +9,7 @@ import type {
   FilterDefinition,
   ItemsSummaryReport,
   Label,
+  LabelReport,
   LedgerEntry,
   LedgerPage,
   MonthlyCategoryBudgets,
@@ -70,6 +71,8 @@ export const api = {
     request<NetEarningsReport>(`/reports/net-earnings?month=${encodeURIComponent(month)}`),
   itemsSummary: (month: string) =>
     request<ItemsSummaryReport>(`/reports/items-summary?month=${encodeURIComponent(month)}`),
+  labelReport: (month: string) =>
+    request<LabelReport>(`/reports/labels?month=${encodeURIComponent(month)}`),
   dailySummary: (anchorDate: string) =>
     request<DailySummaryReport>(`/reports/daily-summary?anchor_date=${encodeURIComponent(anchorDate)}`),
   balanceSheet: (month: string) =>
