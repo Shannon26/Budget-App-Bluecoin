@@ -64,6 +64,13 @@ export function useOverviewForms(
     transferToSelection.current.initialized = true;
     setTransferToState(value);
   }, []);
+  const canSwapTransferAccounts =
+    !submitting && Boolean(transferFrom && transferTo && transferFrom !== transferTo);
+  const swapTransferAccounts = useCallback(() => {
+    if (!canSwapTransferAccounts) return;
+    setTransferFrom(transferTo);
+    setTransferTo(transferFrom);
+  }, [canSwapTransferAccounts, setTransferFrom, setTransferTo, transferFrom, transferTo]);
   const [transferAmount, setTransferAmount] = useState("");
   const [transferNote, setTransferNote] = useState("");
   const [transferDate, setTransferDate] = useState(localDateValue());
@@ -315,6 +322,8 @@ export function useOverviewForms(
     setTransferFrom,
     transferTo,
     setTransferTo,
+    canSwapTransferAccounts,
+    swapTransferAccounts,
     transferAmount,
     setTransferAmount,
     transferNote,

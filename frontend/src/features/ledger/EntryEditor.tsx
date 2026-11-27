@@ -39,7 +39,15 @@ export default function EntryEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sameTransferAccount = isTransfer && accountId === counterpartId;
+  const canSwapTransferAccounts =
+    isTransfer && !saving && Boolean(accountId && counterpartId && !sameTransferAccount);
   const visibleError = sameTransferAccount ? "Choose two different accounts" : error;
+
+  function swapTransferAccounts() {
+    if (!canSwapTransferAccounts) return;
+    setAccountId(counterpartId);
+    setCounterpartId(accountId);
+  }
 
   const activeCategories = data.categories.filter(
     (category) =>
@@ -155,7 +163,7 @@ export default function EntryEditor({
               </label>
             </div>
           )}
-          <div className={isTransfer ? "form-row" : ""}>
+          <div className={isTransfer ? "form-row transfer-account-row" : ""}>
             <label>
               {isTransfer ? "From" : "Account"}
               <select
@@ -174,6 +182,17 @@ export default function EntryEditor({
                 ))}
               </select>
             </label>
+            {isTransfer && (
+              <button
+                className="secondary-button"
+                data-testid="swap-edit-accounts"
+                type="button"
+                onClick={swapTransferAccounts}
+                disabled={!canSwapTransferAccounts}
+              >
+                <span aria-hidden="true">⇄</span> Swap accounts
+              </button>
+            )}
             {isTransfer && (
               <label>
                 To
