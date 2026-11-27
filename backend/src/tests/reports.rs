@@ -910,6 +910,61 @@ async fn items_summary_empty_invalid_month_and_overflow_are_explicit() {
 }
 
 #[tokio::test]
+async fn ordinary_reports_do_not_read_label_tables() {
+    let (app, pool, _directory) = setup().await;
+    let account = create_account(&app, "Ordinary report isolation", 0).await;
+    let label = create_report_label(&app, "Isolation label").await;
+    create_labelled_entry_at(
+        &app,
+        "expense",
+        account,
+        250,
+        "Isolation expense",
+        &[label],
+        "2026-11-10",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        account,
+        500,
+        "Isolation income",
+        None,
+        "2026-11-10",
+    )
+    .await;
+
+    // Any ordinary report query that still reads label state now fails.
+    sqlx::query("ALTER TABLE entry_labels RENAME TO entry_labels_unavailable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE labels RENAME TO labels_unavailable")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, net) = report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(net["current"]["income_minor"], 500);
+    assert_eq!(net["current"]["expense_minor"], 250);
+    assert_eq!(net["current"]["net_minor"], 250);
+
+    let (status, items) = items_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{items}");
+    assert_eq!(items["current"]["income_minor"], 500);
+    assert_eq!(items["current"]["expense_minor"], 250);
+    assert_eq!(items["income_items"][0]["name"], "Isolation income");
+    assert_eq!(items["expense_items"][0]["name"], "Isolation expense");
+
+    let (status, daily) = daily_report(&app, "2026-11-10").await;
+    assert_eq!(status, StatusCode::OK, "{daily}");
+    assert_eq!(daily["days"][6]["date"], "2026-11-10");
+    assert_eq!(daily["days"][6]["expense_minor"], 250);
+}
+
+#[tokio::test]
 async fn label_report_conserves_paise_with_stable_id_leftovers_renames_and_no_labels_identity() {
     let (app, _pool, _directory) = setup().await;
     let account = create_account(&app, "Label allocation opening balance", 900_000).await;

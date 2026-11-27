@@ -3,7 +3,7 @@ use crate::date::{date_only, is_valid_calendar_date, month_bounds, previous_mont
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::{NaiveDate, TimeDelta};
-use sqlx::FromRow;
+use sqlx::{FromRow, SqliteConnection};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, FromRow)]
@@ -21,8 +21,6 @@ pub(super) struct ReportEntry {
 pub(super) struct ReportSnapshot {
     pub(super) hidden_report_accounts: HashSet<i64>,
     pub(super) categories: Vec<Category>,
-    pub(super) labels: Vec<Label>,
-    pub(super) entry_label_ids: HashMap<i64, Vec<i64>>,
     pub(super) entries: Vec<ReportEntry>,
 }
 
@@ -48,6 +46,8 @@ pub(super) struct ReportMonths {
     pub(super) prior_start: String,
     pub(super) prior_end: String,
 }
+
+const REPORT_LABEL_BATCH_SIZE: usize = 500;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct CategoryAmount {
@@ -289,17 +289,64 @@ impl Store {
         })
     }
 
-    pub(super) async fn report_snapshot(&self) -> AppResult<ReportSnapshot> {
-        // A deferred read transaction gives accounts, categories, labels, links,
-        // and entries one consistent SQLite snapshot without taking a write lock.
-        let mut transaction = self.pool.begin().await?;
-        let hidden_report_accounts =
+    async fn read_hidden_report_accounts(
+        transaction: &mut SqliteConnection,
+    ) -> AppResult<HashSet<i64>> {
+        Ok(
             sqlx::query_as::<_, (i64, bool)>("SELECT id, hide_from_reports FROM accounts")
                 .fetch_all(&mut *transaction)
                 .await?
                 .into_iter()
                 .filter_map(|(id, hidden)| hidden.then_some(id))
-                .collect::<HashSet<_>>();
+                .collect::<HashSet<_>>(),
+        )
+    }
+
+    async fn read_report_entries(
+        transaction: &mut SqliteConnection,
+    ) -> AppResult<Vec<ReportEntry>> {
+        Ok(sqlx::query_as::<_, ReportEntry>(
+            "SELECT id, account_id, category_id, name, kind, amount_minor, occurred_at
+             FROM entries
+             WHERE kind IN ('income', 'expense')",
+        )
+        .fetch_all(&mut *transaction)
+        .await?)
+    }
+
+    async fn read_entry_label_ids(
+        transaction: &mut SqliteConnection,
+        entry_ids: &[i64],
+    ) -> AppResult<HashMap<i64, Vec<i64>>> {
+        let mut assignments = HashMap::<i64, Vec<i64>>::new();
+        for batch in entry_ids.chunks(REPORT_LABEL_BATCH_SIZE) {
+            // Stay below SQLite's legacy variable limit. Only Rust-selected,
+            // eligible entry IDs are ever bound to this label-specific query.
+            let placeholders = vec!["?"; batch.len()].join(",");
+            let sql = format!(
+                "SELECT el.entry_id, el.label_id
+                 FROM entry_labels el
+                 JOIN labels l ON l.id = el.label_id
+                 WHERE el.entry_id IN ({placeholders})
+                 ORDER BY el.entry_id, el.label_id"
+            );
+            let mut query = sqlx::query_as::<_, (i64, i64)>(&sql);
+            for entry_id in batch {
+                query = query.bind(*entry_id);
+            }
+            for (entry_id, label_id) in query.fetch_all(&mut *transaction).await? {
+                assignments.entry(entry_id).or_default().push(label_id);
+            }
+        }
+        Ok(assignments)
+    }
+
+    pub(super) async fn report_snapshot(&self) -> AppResult<ReportSnapshot> {
+        // A deferred read transaction gives accounts, categories, and entries one
+        // consistent SQLite snapshot without taking a write lock. Ordinary reports
+        // deliberately never query label tables.
+        let mut transaction = self.pool.begin().await?;
+        let hidden_report_accounts = Self::read_hidden_report_accounts(&mut transaction).await?;
         let categories = sqlx::query_as::<_, Category>(
             "SELECT c.id, c.name, c.kind, c.parent_id, p.name AS parent_name,
                     c.color, c.icon, c.sort_order, c.archived_at, c.created_at
@@ -309,35 +356,11 @@ impl Store {
         )
         .fetch_all(&mut *transaction)
         .await?;
-        let labels =
-            sqlx::query_as::<_, Label>("SELECT id, name FROM labels ORDER BY name_key, id")
-                .fetch_all(&mut *transaction)
-                .await?;
-        let mut entry_label_ids = HashMap::<i64, Vec<i64>>::new();
-        for (entry_id, label_id) in sqlx::query_as::<_, (i64, i64)>(
-            "SELECT el.entry_id, el.label_id
-             FROM entry_labels el
-             JOIN labels l ON l.id = el.label_id
-             ORDER BY el.entry_id, el.label_id",
-        )
-        .fetch_all(&mut *transaction)
-        .await?
-        {
-            entry_label_ids.entry(entry_id).or_default().push(label_id);
-        }
-        let entries = sqlx::query_as::<_, ReportEntry>(
-            "SELECT id, account_id, category_id, name, kind, amount_minor, occurred_at
-             FROM entries
-             WHERE kind IN ('income', 'expense')",
-        )
-        .fetch_all(&mut *transaction)
-        .await?;
+        let entries = Self::read_report_entries(&mut transaction).await?;
         transaction.commit().await?;
         Ok(ReportSnapshot {
             hidden_report_accounts,
             categories,
-            labels,
-            entry_label_ids,
             entries,
         })
     }
@@ -554,21 +577,11 @@ impl Store {
             current_end,
             ..
         } = Self::report_months(month)?;
-        let ReportSnapshot {
-            hidden_report_accounts,
-            labels,
-            entry_label_ids,
-            entries,
-            ..
-        } = self.report_snapshot().await?;
-        let mut current = CategoryAmount::default();
-        let mut amounts = HashMap::<Option<i64>, LabelAmount>::new();
-        amounts.insert(None, LabelAmount::default());
-        for label in &labels {
-            amounts.insert(Some(label.id), LabelAmount::default());
-        }
+        let mut transaction = self.pool.begin().await?;
+        let hidden_report_accounts = Self::read_hidden_report_accounts(&mut transaction).await?;
+        let entries = Self::read_report_entries(&mut transaction).await?;
+        let mut eligible_entries = Vec::new();
         let mut invalid_date_entry_count = 0_i128;
-
         for entry in entries {
             if hidden_report_accounts.contains(&entry.account_id) {
                 continue;
@@ -577,10 +590,28 @@ impl Store {
                 invalid_date_entry_count += 1;
                 continue;
             };
-            if date.as_str() < current_start.as_str() || date.as_str() >= current_end.as_str() {
-                continue;
+            if date.as_str() >= current_start.as_str() && date.as_str() < current_end.as_str() {
+                eligible_entries.push(entry);
             }
-
+        }
+        let labels =
+            sqlx::query_as::<_, Label>("SELECT id, name FROM labels ORDER BY name_key, id")
+                .fetch_all(&mut *transaction)
+                .await?;
+        let eligible_entry_ids = eligible_entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        let entry_label_ids =
+            Self::read_entry_label_ids(&mut transaction, &eligible_entry_ids).await?;
+        transaction.commit().await?;
+        let mut current = CategoryAmount::default();
+        let mut amounts = HashMap::<Option<i64>, LabelAmount>::new();
+        amounts.insert(None, LabelAmount::default());
+        for label in &labels {
+            amounts.insert(Some(label.id), LabelAmount::default());
+        }
+        for entry in eligible_entries {
             // The overall report counts each posted entry once. Allocation is a
             // separate additive partition of that same positive integer amount.
             current.add(&entry.kind, entry.amount_minor);
@@ -919,5 +950,76 @@ impl Store {
                 "legacy opening account count",
             )?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn entry_label_queries_are_scoped_batched_and_skip_empty_selection() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE entry_labels (
+                entry_id INTEGER NOT NULL,
+                label_id INTEGER NOT NULL,
+                PRIMARY KEY (entry_id, label_id)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO labels (id, name) VALUES (1, 'One'), (2, 'Two')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "WITH RECURSIVE ids(id) AS (
+                SELECT 1 UNION ALL SELECT id + 1 FROM ids WHERE id < 501
+             )
+             INSERT INTO entry_labels (entry_id, label_id) SELECT id, 1 FROM ids",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO entry_labels (entry_id, label_id) VALUES (500, 2), (9999, 1), (1, 999)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let eligible_ids = (1..=501).collect::<Vec<_>>();
+        let mut transaction = pool.begin().await.unwrap();
+        let assignments = Store::read_entry_label_ids(&mut transaction, &eligible_ids)
+            .await
+            .unwrap();
+        assert_eq!(assignments.len(), 501);
+        assert_eq!(assignments.get(&1), Some(&vec![1]));
+        assert_eq!(assignments.get(&500), Some(&vec![1, 2]));
+        assert!(!assignments.contains_key(&9999));
+        for entry_id in 1..=501 {
+            assert!(assignments.contains_key(&entry_id));
+        }
+
+        // An empty eligible selection must not touch the association table.
+        sqlx::query("DROP TABLE entry_labels")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        let empty = Store::read_entry_label_ids(&mut transaction, &[])
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 }
