@@ -202,6 +202,7 @@ mod accounts;
 mod budget_rules;
 mod budgets;
 mod categories;
+mod credit_cards;
 mod filters;
 mod labels;
 mod ledger;

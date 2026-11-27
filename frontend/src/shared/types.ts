@@ -151,6 +151,71 @@ export interface BalanceSheetReport {
   legacy_opening_account_count: number;
 }
 
+export interface CreditCardStatementEvent {
+  entry_id: number;
+  transfer_id: number | null;
+  entry_kind: string;
+  name: string;
+  occurred_at: string;
+  amount_minor: number;
+  counterpart_account_name: string | null;
+}
+
+export interface CreditCardStatement {
+  start_date: string;
+  cutoff_date: string;
+  end_date_exclusive: string;
+  due_date: string;
+  payment_start_date: string;
+  payment_end_date_exclusive: string;
+  opening_balance_minor: number;
+  opening_baseline_before_period_minor: number;
+  opening_baseline_inside_period_minor: number;
+  balance_before_period_minor: number;
+  balance_at_cutoff_minor: number;
+  owed_at_cutoff_minor: number;
+  credit_at_cutoff_minor: number;
+  charge_minor: number;
+  non_transfer_credit_minor: number;
+  statement_payment_minor: number;
+  statement_advance_minor: number;
+  post_cutoff_charge_minor: number;
+  post_cutoff_non_transfer_credit_minor: number;
+  post_cutoff_payment_minor: number;
+  post_cutoff_advance_minor: number;
+  charge_count: number;
+  non_transfer_credit_count: number;
+  statement_payment_count: number;
+  statement_advance_count: number;
+  post_cutoff_charge_count: number;
+  post_cutoff_non_transfer_credit_count: number;
+  post_cutoff_payment_count: number;
+  post_cutoff_advance_count: number;
+  invalid_date_entry_count: number;
+  legacy_opening_balance: boolean;
+  statement_activities: CreditCardStatementEvent[];
+  statement_payments: CreditCardStatementEvent[];
+  post_cutoff_charges: CreditCardStatementEvent[];
+  post_cutoff_advances: CreditCardStatementEvent[];
+  post_cutoff_payments: CreditCardStatementEvent[];
+  post_cutoff_non_transfer_credits: CreditCardStatementEvent[];
+}
+
+export interface CreditCardReport {
+  account_id: number;
+  account_name: string;
+  anchor_date: string;
+  current_balance_minor: number;
+  current_owed_minor: number;
+  current_credit_minor: number;
+  available_credit_minor: number | null;
+  credit_limit_minor: number | null;
+  cutoff_day: number | null;
+  due_day: number | null;
+  missing_settings: string[];
+  statement: CreditCardStatement | null;
+}
+
 export interface Totals {
   income_minor: number;
   expense_minor: number;

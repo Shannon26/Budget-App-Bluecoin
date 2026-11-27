@@ -138,6 +138,7 @@ The backend suite covers:
 - transaction/transfer date validation with no writes on rejection, plus blank CSV dates for invalid legacy timestamps;
 - monthly budget validation, parent/child rollups and limit invariants, category-move checks, budget-aware archiving/type changes, overall de-duplication, Uncategorized inclusion, invalid-date warnings, month/leap-day boundaries, and edit/delete recalculation;
 - saved-filter persistence and reconciliation filtering;
+- credit-card cutoff statements, due-day rollover/short-month clamping, card-side payments, separate credits, visibility, missing settings, invalid legacy dates, before/inside/after-cutoff opening-baseline gating, and checked-paise overflow;
 - one combined transfer row and relevant account-history sides;
 - transfer edit/delete updating both accounts without changing totals;
 - rollback when either transfer-leg insert or update fails;
@@ -162,6 +163,7 @@ All amounts are integer minor units.
 | `GET` | `/api/reports/items-summary?month=YYYY-MM` | Selected-month income/expense totals and ranked exact-name item groups with counts |
 | `GET` | `/api/reports/daily-summary?anchor_date=YYYY-MM-DD` | Seven-day expense chart values and full-window 7/30-day average expenses |
 | `GET` | `/api/reports/balance-sheet?month=YYYY-MM` | Prior/selected month-end signed balances by asset, liability, and unclassified group |
+| `GET` | `/api/reports/credit-card?account_id=:id&anchor_date=YYYY-MM-DD` | Selected card's signed current balance, ledger-derived cutoff statement, card-directed payments, advances, charges, and non-transfer credits |
 | `POST` | `/api/transactions` | Create income/expense |
 | `GET/PUT/DELETE` | `/api/transactions/:id` | Detail/edit/permanent delete |
 | `POST` | `/api/transactions/:id/duplicate` | Duplicate transaction |
@@ -198,6 +200,26 @@ Items Summary groups transaction names exactly and case-sensitively; notes are n
 Balance Sheet uses cumulative month-end snapshots for the selected month and the month immediately before it. Valid posted income, expenses, and both transfer legs before the next month starts are included. A known opening date gates only the opening baseline; posted history remains even if that metadata changes. Legacy accounts without an opening date retain their baseline in both snapshots, a documented historical limitation. Balances stay signed, and net worth equals assets plus signed liabilities plus unclassified balances. Report-hidden accounts and invalid legacy dated entries are excluded; picker-only hidden accounts remain included.
 
 Daily Summary requires a strict local `anchor_date=YYYY-MM-DD` and includes that day. Its chart covers the anchor and previous six calendar days, including real zero-spend days. Both averages use their full 7- or 30-calendar-day window and round to the nearest integer paise, with exact halves rounded up. Anchors before `0000-01-30` cannot provide a complete non-negative 30-day window and return HTTP 400. Only posted expenses count; report visibility, invalid-date, transfer, and opening-balance rules match the other reports.
+
+## Using Card Summary
+
+1. Open **Card Summary** and choose a report-visible Credit Card account.
+2. Choose a cutoff-date anchor. The anchor selects the calendar month whose clamped cutoff closes the statement period; it is not an issuer statement date.
+3. Read the current signed balance separately from the statement balance at cutoff, charges, advances, non-transfer credits, card-directed payments, due date, and post-cutoff activity.
+
+Paisa uses these explicit ledger-derived rules:
+
+- The statement starts the day after the previous month's clamped cutoff and ends after the selected cutoff day, so the cutoff day is included and the next day is excluded. Boundaries use the shared local calendar-date prefix and half-open date comparisons.
+- The due date is the first clamped due-day strictly after cutoff. A due-day equal to the cutoff rolls to the next month. Day 31 clamps to February 28 or 29 as appropriate.
+- Canonical signed delta is `income = +amount`, `expense = -amount`, card `transfer_in = +amount`, and card `transfer_out = -amount`. A bank/asset-account → card transfer is the card's incoming `transfer_in` leg: it reduces debt and is a card-directed payment. A card → bank/asset-account `transfer_out` is an advance/withdrawal: it increases debt and is never a payment. Non-transfer income is a separate income/refund credit.
+- A valid dated opening baseline activates before the period only when `opening_date < period_start`, inside the period when `period_start <= opening_date < cutoff_date + 1 day`, and after cutoff in neither balance. A baseline on the cutoff date is inside; one on the following day is excluded. Balance before the period includes only the before-period baseline plus valid canonical deltas before the period starts. Statement balance at cutoff reconciles as `balance before period + opening baseline activated inside period − charges − advances + non-transfer credits + card-directed statement payments`.
+- Statement-period and post-cutoff windows separately count charges (`expense`), advances (`transfer_out`), card-directed payments (`transfer_in`), and non-transfer credits (`income`). The post-cutoff payment window is **after cutoff through the due date inclusive**. A payment on cutoff is included in the statement payment total and cutoff balance, never in the post-cutoff payment total. The counterpart transfer leg is never counted again.
+- A known opening date gates only the opening baseline; posted history and historical transaction dates are retained. A missing opening date keeps the legacy baseline before the period and is disclosed; an invalid opening date returns an explicit error. The anchor selects a cutoff cycle, not an as-of date, so valid ledger-dated activity in the selected windows is included even if it is later than the anchor or today.
+- Current balance uses the canonical signed account balance: opening balance plus all posted income, expenses, and card-side transfer legs, including later activity and invalid legacy dates. Invalid dates are counted and excluded from the cutoff statement. Available limit is `credit_limit + current_balance`, calculated with checked integer paise and labeled ledger-based.
+- Negative balances are **Amount owed**, positive balances are **Credit balance**, and zero is **Settled**. Missing cutoff or due settings leave the statement unavailable while keeping the current summary visible. Invalid anchors/settings and invalid opening dates for an available statement return explicit errors.
+- Report-hidden cards are excluded; picker-only hidden cards remain included. Paisa has no account archive field. Archived categories keep their historical assignments and do not alter card totals.
+
+This view is **not an issuer-provided bill, minimum due, payment allocation, or reminder schedule**. The saved Bluecoins Demo evidence establishes a Credit Card Summary entry and labels, not those calculation rules. On 2026-11-27 the Demo showed cutoff day 18, due day 2, credit limit ₹14,000.00, Previous Balance −₹235.03, Purchases/Advances ₹0.00, Payments/Credit +₹68.91, Outstanding Balance −₹166.12, Not billed yet ₹0.00, and Available Credit Limit ₹13,833.88 (`ev_8f200602d8bf609b63445f978598f233409a31aea4f43c8420fd2ce26d3c0b92`, `ev_049eb5a73d397d9f729c13f1b9f2880fd325503e1959615486a4d7891652789d`). Its internal cutoff inclusion, rollover, allocation, and minimum-due behavior remain unverified.
 
 Example transaction:
 
@@ -307,7 +329,9 @@ Restart with the startup command above.
 
 ## Verified result
 
-Verified on 2026-11-26:
+Current F09 verification on 2026-11-27: Rust fmt/check, **86 Rust tests**, **11 frontend tests**, the production build, `npm audit` (0 vulnerabilities), **27 browser tests** on disposable SQLite, and whitespace checks passed. F09 remains uncommitted pending review.
+
+Historical baseline verified on 2026-11-26:
 
 - `cargo test`: **31 passed; 0 failed**
 - `npm test`: **7 passed; 0 failed**

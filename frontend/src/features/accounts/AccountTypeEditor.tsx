@@ -216,7 +216,9 @@ export default function AccountTypeEditor({
               />
             </label>
           </div>
-          <p className="field-hint">Monthly metadata only; scheduling arrives with reports.</p>
+          <p className="field-hint">
+            Used by Card Summary. Paisa does not infer issuer billing or reminder schedules.
+          </p>
         </>
       )}
       <label>

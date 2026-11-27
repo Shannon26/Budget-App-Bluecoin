@@ -246,6 +246,7 @@ fn budget_row(body: &Value, category_id: i64) -> &Value {
 mod accounts;
 mod budgets;
 mod categories;
+mod credit_cards;
 mod csv_export;
 mod filters;
 mod labels;

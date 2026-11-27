@@ -22,6 +22,12 @@ pub struct BalanceSheetReportQuery {
     pub month: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreditCardReportQuery {
+    pub account_id: i64,
+    pub anchor_date: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportPeriod {
     pub start_date: String,
@@ -147,4 +153,76 @@ pub struct BalanceSheetReport {
     pub current_net_worth_minor: i64,
     pub invalid_date_entry_count: i64,
     pub legacy_opening_account_count: i64,
+}
+
+/// One identifiable card-side ledger event. Incoming transfer_in legs are
+/// card-directed payments; outgoing transfer_out legs are advances/withdrawals;
+/// non-transfer income remains a separate credit.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditCardStatementEvent {
+    pub entry_id: i64,
+    pub transfer_id: Option<i64>,
+    pub entry_kind: String,
+    pub name: String,
+    pub occurred_at: String,
+    pub amount_minor: i64,
+    pub counterpart_account_name: Option<String>,
+}
+
+/// Paisa's ledger-derived statement convention, not an issuer-provided bill.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditCardStatement {
+    pub start_date: String,
+    pub cutoff_date: String,
+    pub end_date_exclusive: String,
+    pub due_date: String,
+    pub payment_start_date: String,
+    pub payment_end_date_exclusive: String,
+    pub opening_balance_minor: i64,
+    pub opening_baseline_before_period_minor: i64,
+    pub opening_baseline_inside_period_minor: i64,
+    pub balance_before_period_minor: i64,
+    pub balance_at_cutoff_minor: i64,
+    pub owed_at_cutoff_minor: i64,
+    pub credit_at_cutoff_minor: i64,
+    pub charge_minor: i64,
+    pub non_transfer_credit_minor: i64,
+    pub statement_payment_minor: i64,
+    pub statement_advance_minor: i64,
+    pub post_cutoff_charge_minor: i64,
+    pub post_cutoff_non_transfer_credit_minor: i64,
+    pub post_cutoff_payment_minor: i64,
+    pub post_cutoff_advance_minor: i64,
+    pub charge_count: i64,
+    pub non_transfer_credit_count: i64,
+    pub statement_payment_count: i64,
+    pub statement_advance_count: i64,
+    pub post_cutoff_charge_count: i64,
+    pub post_cutoff_non_transfer_credit_count: i64,
+    pub post_cutoff_payment_count: i64,
+    pub post_cutoff_advance_count: i64,
+    pub invalid_date_entry_count: i64,
+    pub legacy_opening_balance: bool,
+    pub statement_activities: Vec<CreditCardStatementEvent>,
+    pub statement_payments: Vec<CreditCardStatementEvent>,
+    pub post_cutoff_charges: Vec<CreditCardStatementEvent>,
+    pub post_cutoff_advances: Vec<CreditCardStatementEvent>,
+    pub post_cutoff_payments: Vec<CreditCardStatementEvent>,
+    pub post_cutoff_non_transfer_credits: Vec<CreditCardStatementEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditCardReport {
+    pub account_id: i64,
+    pub account_name: String,
+    pub anchor_date: String,
+    pub current_balance_minor: i64,
+    pub current_owed_minor: i64,
+    pub current_credit_minor: i64,
+    pub available_credit_minor: Option<i64>,
+    pub credit_limit_minor: Option<i64>,
+    pub cutoff_day: Option<i64>,
+    pub due_day: Option<i64>,
+    pub missing_settings: Vec<String>,
+    pub statement: Option<CreditCardStatement>,
 }

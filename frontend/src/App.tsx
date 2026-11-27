@@ -3,6 +3,7 @@ import { api } from "./shared/api";
 import { localDateValue } from "./shared/date";
 import type { BudgetState } from "./shared/types";
 import BalanceSheet from "./features/reports/BalanceSheet";
+import CreditCardSummary from "./features/reports/CreditCardSummary";
 import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
 import LabelsManager from "./features/labels/LabelsManager";
@@ -23,7 +24,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "balance";
+type Tab = "overview" | "ledger" | "categories" | "labels" | "budgets" | "reports" | "items" | "balance" | "cards";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -158,6 +159,15 @@ export default function App() {
         >
           Balance Sheet
         </button>
+        <button
+          data-testid="nav-card-summary"
+          className={activeTab === "cards" ? "active" : ""}
+          aria-current={activeTab === "cards" ? "page" : undefined}
+          type="button"
+          onClick={() => setActiveTab("cards")}
+        >
+          Card Summary
+        </button>
       </nav>
 
       <main>
@@ -247,6 +257,12 @@ export default function App() {
         {activeTab === "balance" && (
           <section className="panel ledger-panel">
             <BalanceSheet />
+          </section>
+        )}
+
+        {activeTab === "cards" && (
+          <section className="panel ledger-panel">
+            <CreditCardSummary accounts={data.accounts} />
           </section>
         )}
       </main>

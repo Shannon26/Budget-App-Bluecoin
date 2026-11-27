@@ -29,10 +29,12 @@
 @media (max-width: 720px) {
   .main-nav {
     display: flex;
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   .main-nav button {
-    flex: 1;
+    flex: 0 0 auto;
     padding: 0 10px;
   }
 

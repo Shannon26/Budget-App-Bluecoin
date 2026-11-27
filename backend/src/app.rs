@@ -97,6 +97,10 @@ pub(crate) fn build_router(pool: SqlitePool) -> Router {
             get(routes::reports::balance_sheet),
         )
         .route(
+            "/api/reports/credit-card",
+            get(routes::reports::credit_card),
+        )
+        .route(
             "/api/categories",
             get(routes::categories::list_categories).post(routes::categories::create_category),
         )

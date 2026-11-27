@@ -86,7 +86,9 @@ export default function AccountForm({ forms }: { forms: OverviewForms }) {
                 />
               </label>
             </div>
-            <p className="field-hint">Monthly metadata only; scheduling arrives with reports.</p>
+            <p className="field-hint">
+              Used by Card Summary. Paisa does not infer issuer billing or reminder schedules.
+            </p>
           </>
         )}
         <div className="form-row">

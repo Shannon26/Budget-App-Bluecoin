@@ -2810,3 +2810,288 @@ test("Saved filters support rename-only, explicit applied-criteria replacement, 
   expect(afterDelete.entries.some((entry: { id: number }) => entry.id === targetId)).toBe(true);
   expect(afterDelete.entries.some((entry: { id: number }) => entry.id === otherId)).toBe(true);
 });
+
+test("Card Summary separates cutoff balances, card-side payments, credits, and current activity", async ({
+  page,
+  request,
+}) => {
+  async function createCard(
+    name: string,
+    opening: number,
+    cutoff: number | null,
+    due: number | null,
+    options: { pickerHidden?: boolean; reportHidden?: boolean; openingDate?: string } = {},
+  ) {
+    const response = await request.post("/api/accounts", {
+      data: {
+        name,
+        currency: "INR",
+        account_type: "credit_card",
+        opening_balance_minor: opening,
+        opening_date: options.openingDate ?? "2036-01-01",
+        credit_limit_minor: 500000,
+        cutoff_day: cutoff,
+        due_day: due,
+        hide_from_selection: options.pickerHidden ?? false,
+        hide_from_reports: options.reportHidden ?? false,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    return (await response.json()).id as number;
+  }
+  async function entry(kind: "expense" | "income", accountId: number, amount: number, name: string, date: string) {
+    const response = await request.post("/api/transactions", {
+      data: { kind, account_id: accountId, amount_minor: amount, name, category_id: null, occurred_at: date },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+  async function transfer(from: number, to: number, amount: number, name: string, date: string) {
+    const response = await request.post("/api/transfers", {
+      data: { from_account_id: from, to_account_id: to, amount_minor: amount, name, occurred_at: date },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+
+  const card = await createCard("F09 statement card", 0, 18, 2);
+  const shortCard = await createCard("F09 short-month card", 0, 18, 31);
+  const missing = await createCard("F09 missing-settings card", -12345, null, null);
+  const settled = await createCard("F09 settled card", 0, 18, 2);
+  const pickerHidden = await createCard("F09 picker-hidden card", 0, 18, 2, { pickerHidden: true });
+  const insideOpening = await createCard("F09 inside-opening card", 100000, 18, 2, { openingDate: "2036-11-10" });
+  await createCard("F09 report-hidden card", 0, 18, 2, { pickerHidden: true, reportHidden: true });
+  const bankResponse = await request.post("/api/accounts", {
+    data: { name: "F09 payment bank", currency: "INR", opening_balance_minor: 1000000 },
+  });
+  expect(bankResponse.ok()).toBeTruthy();
+  const bank = (await bankResponse.json()).id as number;
+  const shortBankResponse = await request.post("/api/accounts", {
+    data: { name: "F09 short-month bank", currency: "INR", opening_balance_minor: 100000 },
+  });
+  expect(shortBankResponse.ok()).toBeTruthy();
+  const shortBank = (await shortBankResponse.json()).id as number;
+
+  await entry("expense", card, 25000, "F09 cutoff charge", "2036-11-18T23:59:59");
+  await entry("expense", card, 1000, "F09 next-day charge", "2036-11-19T00:00:00");
+  await entry("income", card, 3000, "F09 recorded refund", "2036-11-10T12:00:00");
+  await transfer(bank, card, 2000, "F09 statement repayment", "2036-11-05T12:00:00");
+  await transfer(bank, card, 5000, "F09 due-window repayment", "2036-11-20T12:00:00");
+  await transfer(card, bank, 1200, "F09 cash advance", "2036-11-22T12:00:00");
+  await entry("income", card, 1500, "F09 later refund", "2036-11-21T12:00:00");
+
+  await entry("expense", insideOpening, 5000, "F09 actual pre-period charge", "2036-10-18T12:00:00");
+  await entry("expense", insideOpening, 20000, "F09 inside-opening charge", "2036-11-10T12:00:00");
+
+  await entry("expense", shortCard, 100, "F09 short cutoff charge", "2036-02-18T23:59:59");
+  await entry("expense", shortCard, 200, "F09 short next-day charge", "2036-02-19T00:00:00");
+  await transfer(shortBank, shortCard, 300, "F09 clamped due-day repayment", "2036-02-29T23:59:59");
+  await transfer(shortCard, shortBank, 400, "F09 after-clamped-due advance", "2036-03-01T00:00:00");
+
+  const cardHistory = await (await request.get(`/api/accounts/${card}/history?limit=200&offset=0`)).json();
+  expect(cardHistory.entries.find((row: { name: string }) => row.name === "F09 statement repayment")).toMatchObject({
+    kind: "transfer_in",
+    amount_minor: 2000,
+  });
+  expect(cardHistory.entries.find((row: { name: string }) => row.name === "F09 due-window repayment")).toMatchObject({
+    kind: "transfer_in",
+    amount_minor: 5000,
+  });
+  expect(cardHistory.entries.find((row: { name: string }) => row.name === "F09 cash advance")).toMatchObject({
+    kind: "transfer_out",
+    amount_minor: 1200,
+  });
+  const shortHistory = await (await request.get(`/api/accounts/${shortCard}/history?limit=200&offset=0`)).json();
+  expect(shortHistory.entries.find((row: { name: string }) => row.name === "F09 clamped due-day repayment")).toMatchObject({
+    kind: "transfer_in",
+    amount_minor: 300,
+  });
+  expect(shortHistory.entries.find((row: { name: string }) => row.name === "F09 after-clamped-due advance")).toMatchObject({
+    kind: "transfer_out",
+    amount_minor: 400,
+  });
+
+  const beforeView = await (await request.get("/api/state")).json();
+  await page.goto("/");
+  await page.getByTestId("nav-card-summary").click();
+  await expect(page.getByTestId("nav-card-summary")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByText("not an issuer-provided bill or minimum due", { exact: false })).toBeVisible();
+  await expect(page.getByTestId("card-account").locator("option").filter({ hasText: "F09 report-hidden card" })).toHaveCount(0);
+  await expect(page.getByTestId("card-account").locator("option").filter({ hasText: "F09 picker-hidden card" })).toHaveCount(1);
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 statement card" });
+  await page.getByTestId("card-anchor-date").fill("2036-11-27");
+  await expect(page.getByTestId("card-report-name")).toHaveText("F09 statement card");
+  await expect(page.getByTestId("card-current-balance")).toHaveText("-₹157.00");
+  await expect(page.getByTestId("card-current-state")).toHaveText("Amount owed");
+  await expect(page.getByTestId("card-current-owed")).toHaveText("₹157.00");
+  await expect(page.getByTestId("card-available-credit")).toHaveText("₹4,843.00");
+  await expect(page.getByTestId("card-statement-period")).toHaveText("2036-10-19 through 2036-11-18 (inclusive)");
+  await expect(page.getByTestId("card-statement-opening-balance")).toHaveText("₹0.00");
+  await expect(page.getByTestId("card-statement-balance")).toHaveText("-₹200.00");
+  await expect(page.getByTestId("card-statement-state")).toHaveText("Amount owed");
+  await expect(page.getByTestId("card-statement-outstanding")).toHaveText("₹200.00");
+  await expect(page.getByTestId("card-statement-charges")).toHaveText("₹250.00");
+  await expect(page.getByTestId("card-statement-advances")).toHaveText("₹0.00");
+  await expect(page.getByTestId("card-statement-non-transfer-credits")).toHaveText("₹30.00");
+  await expect(page.getByTestId("card-statement-payments")).toHaveText("₹20.00");
+  await expect(page.getByTestId("card-due-date")).toHaveText("2036-12-02");
+  await expect(page.getByTestId("card-payment-window")).toHaveText("2036-11-19 through 2036-12-02 (inclusive)");
+  await expect(page.getByTestId("card-payments")).toHaveText("₹50.00");
+  await expect(page.getByTestId("card-post-cutoff-charges-total")).toHaveText("₹10.00");
+  await expect(page.getByTestId("card-post-cutoff-advances-total")).toHaveText("₹12.00");
+  await expect(page.getByTestId("card-post-cutoff-non-transfer-credits-total")).toHaveText("₹15.00");
+  await expect(page.getByTestId("card-statement-activities")).toContainText("F09 cutoff charge");
+  await expect(page.getByTestId("card-statement-activities")).not.toContainText("F09 next-day charge");
+  await expect(page.getByTestId("card-statement-activities")).not.toContainText("F09 statement repayment");
+  await expect(page.getByTestId("card-statement-payment-events")).toContainText("F09 statement repayment");
+  await expect(page.getByTestId("card-payment-events")).toContainText("F09 due-window repayment");
+  await expect(page.getByTestId("card-payment-events")).toContainText("F09 payment bank");
+  await expect(page.getByTestId("card-payment-events")).not.toContainText("F09 cash advance");
+  await expect(page.getByTestId("card-post-cutoff-charges")).toContainText("F09 next-day charge");
+  await expect(page.getByTestId("card-post-cutoff-charges")).not.toContainText("F09 cutoff charge");
+  await expect(page.getByTestId("card-post-cutoff-advances")).toContainText("F09 cash advance");
+  await expect(page.getByTestId("card-post-cutoff-credits")).toContainText("F09 later refund");
+  await expect(page.getByTestId("card-post-cutoff-credits")).not.toContainText("F09 due-window repayment");
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 inside-opening card" });
+  await expect(page.getByTestId("card-current-balance")).toHaveText("₹750.00");
+  await expect(page.getByTestId("card-current-state")).toHaveText("Credit balance");
+  await expect(page.getByTestId("card-available-credit")).toHaveText("₹5,750.00");
+  await expect(page.getByTestId("card-statement-baseline-before")).toHaveText("₹0.00");
+  await expect(page.getByTestId("card-statement-opening-balance")).toHaveText("-₹50.00");
+  await expect(page.getByTestId("card-statement-baseline-inside")).toHaveText("₹1,000.00");
+  await expect(page.getByTestId("card-statement-charges")).toHaveText("₹200.00");
+  await expect(page.getByTestId("card-statement-balance")).toHaveText("₹750.00");
+  await expect(page.getByTestId("card-statement-state")).toHaveText("Credit balance");
+  await expect(page.getByTestId("card-calculation-rules")).toContainText(
+    "balance before period + opening baseline activated inside period",
+  );
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 short-month card" });
+  await page.getByTestId("card-anchor-date").fill("2036-02-10");
+  await expect(page.getByTestId("card-statement-period")).toHaveText("2036-01-19 through 2036-02-18 (inclusive)");
+  await expect(page.getByTestId("card-due-date")).toHaveText("2036-02-29");
+  await expect(page.getByTestId("card-statement-outstanding")).toHaveText("₹1.00");
+  await expect(page.getByTestId("card-payments")).toHaveText("₹3.00");
+  await expect(page.getByTestId("card-post-cutoff-charges-total")).toHaveText("₹2.00");
+  await expect(page.getByTestId("card-post-cutoff-charges")).toContainText("F09 short next-day charge");
+  await expect(page.getByTestId("card-payment-events")).toContainText("F09 clamped due-day repayment");
+  await expect(page.getByTestId("card-payment-events")).not.toContainText("F09 after-clamped-due advance");
+  await expect(page.getByTestId("card-current-balance")).toHaveText("-₹4.00");
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 missing-settings card" });
+  await expect(page.getByTestId("card-current-balance")).toHaveText("-₹123.45");
+  await expect(page.getByTestId("card-statement-unavailable")).toContainText("cutoff_day, due_day");
+  await expect(page.getByTestId("card-statement-balance")).toHaveCount(0);
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 settled card" });
+  await expect(page.getByTestId("card-current-state")).toHaveText("Settled");
+  await expect(page.getByTestId("card-statement-state")).toHaveText("Settled");
+  await expect(page.getByTestId("card-statement-outstanding")).toHaveText("₹0.00");
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 picker-hidden card" });
+  await expect(page.getByTestId("card-report-name")).toHaveText("F09 picker-hidden card");
+  const afterView = await (await request.get("/api/state")).json();
+  expect(afterView).toEqual(beforeView);
+  expect(afterView.accounts.find((account: { id: number }) => account.id === card).balance_minor).toBe(-15700);
+  expect(afterView.accounts.find((account: { id: number }) => account.id === shortCard).balance_minor).toBe(-400);
+  expect(afterView.accounts.find((account: { id: number }) => account.id === missing).balance_minor).toBe(-12345);
+  expect(afterView.accounts.find((account: { id: number }) => account.id === settled).balance_minor).toBe(0);
+  expect(afterView.accounts.find((account: { id: number }) => account.id === pickerHidden).balance_minor).toBe(0);
+  expect(afterView.accounts.find((account: { id: number }) => account.id === insideOpening).balance_minor).toBe(75000);
+});
+
+test("Card Summary ignores stale selections and errors and recovers on retry", async ({ page, request }) => {
+  const cardIds: number[] = [];
+  for (const name of ["F09 stale card A", "F09 stale card B"]) {
+    const response = await request.post("/api/accounts", {
+      data: {
+        name,
+        currency: "INR",
+        account_type: "credit_card",
+        opening_balance_minor: cardIds.length === 0 ? -1000 : -2000,
+        opening_date: "2036-01-01",
+        cutoff_day: 18,
+        due_day: 2,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    cardIds.push((await response.json()).id as number);
+  }
+  const [cardA, cardB] = cardIds;
+  const releaseStale = deferred();
+  const staleStarted = deferred();
+  const staleFinished = deferred();
+  let failNextAnchor = false;
+  await page.route("**/api/reports/credit-card?**", async (route) => {
+    const url = new URL(route.request().url());
+    const accountId = Number(url.searchParams.get("account_id"));
+    const anchorDate = url.searchParams.get("anchor_date");
+    if (accountId === cardA && anchorDate === "2036-11-27") {
+      staleStarted.resolve();
+      await releaseStale.promise;
+      staleFinished.resolve();
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Superseded card request failed" }),
+      });
+      return;
+    }
+    if (accountId === cardA && anchorDate === "2036-11-28" && failNextAnchor) {
+      failNextAnchor = false;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Card Summary is unavailable" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByTestId("nav-card-summary").click();
+  await page.getByTestId("card-account").selectOption({ label: "F09 stale card A" });
+  await page.getByTestId("card-anchor-date").fill("2036-11-27");
+  await staleStarted.promise;
+  await page.getByTestId("card-account").selectOption({ label: "F09 stale card B" });
+  await expect(page.getByTestId("card-report-name")).toHaveText("F09 stale card B");
+  await expect(page.getByTestId("card-current-balance")).toHaveText("-₹20.00");
+  releaseStale.resolve();
+  await staleFinished.promise;
+  await expect(page.getByTestId("card-report-name")).toHaveText("F09 stale card B");
+  await expect(page.getByTestId("card-error")).toHaveCount(0);
+
+  await page.getByTestId("card-account").selectOption({ label: "F09 stale card A" });
+  failNextAnchor = true;
+  await page.getByTestId("card-anchor-date").fill("2036-11-28");
+  await expect(page.getByTestId("card-error")).toContainText("Card Summary is unavailable");
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByTestId("card-report-name")).toHaveText("F09 stale card A");
+  await expect(page.getByTestId("card-current-balance")).toHaveText("-₹10.00");
+  await page.unroute("**/api/reports/credit-card?**");
+});
+
+test("Card Summary has an explicit empty state without report-visible cards", async ({ page }) => {
+  await page.route("**/api/state", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      json: {
+        accounts: [],
+        account_types: [],
+        totals: { income_minor: 0, expense_minor: 0 },
+        categories: [],
+        category_totals: [],
+        saved_filters: [],
+        labels: [],
+        entries: [],
+      },
+    });
+  });
+  await page.goto("/");
+  await page.getByTestId("nav-card-summary").click();
+  await expect(page.getByTestId("card-empty")).toContainText("No report-visible credit cards");
+  await expect(page.getByTestId("card-account")).toBeDisabled();
+  await expect(page.getByTestId("card-error")).toHaveCount(0);
+});

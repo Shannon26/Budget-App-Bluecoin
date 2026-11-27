@@ -34,3 +34,15 @@ pub(crate) async fn balance_sheet(
 ) -> AppResult<Json<BalanceSheetReport>> {
     Ok(Json(state.store.balance_sheet_report(&query.month).await?))
 }
+
+pub(crate) async fn credit_card(
+    State(state): State<AppState>,
+    Query(query): Query<CreditCardReportQuery>,
+) -> AppResult<Json<CreditCardReport>> {
+    Ok(Json(
+        state
+            .store
+            .credit_card_report(query.account_id, &query.anchor_date)
+            .await?,
+    ))
+}
