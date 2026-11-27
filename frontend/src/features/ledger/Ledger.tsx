@@ -210,16 +210,21 @@ export default function Ledger({
     setNextOffset(null);
     setLoadingMore(false);
     setViewStatus("loading");
-    setStatusViewIdentity(viewKey);
+    setStatusViewIdentity(viewIdentity);
     void loadPage();
-  }, [data.entries, loadPage, viewKey]);
+  }, [data.entries, loadPage, viewIdentity]);
 
-  const activeViewStatus = statusViewKey === viewKey ? viewStatus : "loading";
-  const visibleEntries = statusViewKey === viewKey ? entries : [];
-  const visibleDailyTotals = statusViewKey === viewKey ? dailyTotals : [];
-  const visibleTotalCount = statusViewKey === viewKey ? totalCount : 0;
+  const activeViewStatus =
+    statusViewIdentity === viewIdentity ? viewStatus : "loading";
+  const visibleEntries = statusViewIdentity === viewIdentity ? entries : [];
+  const visibleDailyTotals =
+    statusViewIdentity === viewIdentity ? dailyTotals : [];
+  const visibleTotalCount =
+    statusViewIdentity === viewIdentity ? totalCount : 0;
   const visibleNextOffset =
-    statusViewKey === viewKey && activeViewStatus === "ready" ? nextOffset : null;
+    statusViewIdentity === viewIdentity && activeViewStatus === "ready"
+      ? nextOffset
+      : null;
 
   const groups = useMemo(() => {
     const totalsByDate = new Map(visibleDailyTotals.map((total) => [total.date, total]));
