@@ -23,6 +23,20 @@ pub(super) struct ReportSnapshot {
     pub(super) entries: Vec<ReportEntry>,
 }
 
+#[derive(Debug, FromRow)]
+pub(super) struct BalanceSheetEntry {
+    pub(super) account_id: i64,
+    pub(super) kind: String,
+    pub(super) amount_minor: i64,
+    pub(super) occurred_at: String,
+}
+
+#[derive(Debug)]
+pub(super) struct BalanceSheetSnapshot {
+    pub(super) accounts: Vec<Account>,
+    pub(super) entries: Vec<BalanceSheetEntry>,
+}
+
 pub(super) struct ReportMonths {
     pub(super) month: String,
     pub(super) prior_month: String,
@@ -82,6 +96,17 @@ impl PeriodAmount {
 fn checked_i64(value: i128, label: &str) -> AppResult<i64> {
     i64::try_from(value)
         .map_err(|_| AppError::Conflict(format!("{label} is outside the supported integer range")))
+}
+
+fn inclusive_month_end(exclusive_date: &str) -> AppResult<String> {
+    let date = NaiveDate::parse_from_str(exclusive_date, "%Y-%m-%d").map_err(|_| {
+        AppError::BadRequest("report month-end could not be represented".to_string())
+    })?;
+    date.checked_sub_signed(TimeDelta::days(1))
+        .map(|date| date.to_string())
+        .ok_or_else(|| {
+            AppError::BadRequest("report month-end could not be represented".to_string())
+        })
 }
 
 fn rounded_average(total_minor: i128, days: i128, label: &str) -> AppResult<i64> {
@@ -278,6 +303,25 @@ impl Store {
             categories,
             entries,
         })
+    }
+
+    pub(super) async fn balance_sheet_snapshot(&self) -> AppResult<BalanceSheetSnapshot> {
+        let mut transaction = self.pool.begin().await?;
+        let accounts = sqlx::query_as::<_, Account>(
+            "SELECT id, name, currency, opening_balance_minor, created_at, account_type,
+                    note, opening_date, hide_from_selection, hide_from_reports,
+                    credit_limit_minor, cutoff_day, due_day
+             FROM accounts",
+        )
+        .fetch_all(&mut *transaction)
+        .await?;
+        let entries = sqlx::query_as::<_, BalanceSheetEntry>(
+            "SELECT account_id, kind, amount_minor, occurred_at FROM entries",
+        )
+        .fetch_all(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(BalanceSheetSnapshot { accounts, entries })
     }
 
     pub async fn net_earnings_report(&self, month: &str) -> AppResult<NetEarningsReport> {
@@ -558,6 +602,159 @@ impl Store {
             invalid_date_entry_count: checked_i64(
                 invalid_date_entry_count,
                 "invalid-date entry count",
+            )?,
+        })
+    }
+
+    pub async fn balance_sheet_report(&self, month: &str) -> AppResult<BalanceSheetReport> {
+        let ReportMonths {
+            month,
+            prior_month,
+            current_end,
+            prior_end,
+            ..
+        } = Self::report_months(month)?;
+        let prior_date = inclusive_month_end(&prior_end)?;
+        let current_date = inclusive_month_end(&current_end)?;
+        let BalanceSheetSnapshot { accounts, entries } = self.balance_sheet_snapshot().await?;
+        let hidden_accounts = accounts
+            .iter()
+            .filter(|account| account.hide_from_reports)
+            .map(|account| account.id)
+            .collect::<HashSet<_>>();
+        let mut prior_deltas = HashMap::<i64, i128>::new();
+        let mut current_deltas = HashMap::<i64, i128>::new();
+        let mut invalid_date_entry_count = 0_i128;
+        for entry in entries {
+            if hidden_accounts.contains(&entry.account_id) {
+                continue;
+            }
+            let Some(date) = date_only(&entry.occurred_at) else {
+                invalid_date_entry_count += 1;
+                continue;
+            };
+            let delta = match entry.kind.as_str() {
+                "income" | "transfer_in" => i128::from(entry.amount_minor),
+                "expense" | "transfer_out" => -i128::from(entry.amount_minor),
+                _ => 0,
+            };
+            if date.as_str() < prior_end.as_str() {
+                *prior_deltas.entry(entry.account_id).or_default() += delta;
+            }
+            if date.as_str() < current_end.as_str() {
+                *current_deltas.entry(entry.account_id).or_default() += delta;
+            }
+        }
+
+        let mut grouped = BTreeMap::<String, Vec<(Account, i128, i128)>>::new();
+        let mut prior_net_worth = 0_i128;
+        let mut current_net_worth = 0_i128;
+        let mut legacy_opening_account_count = 0_i128;
+        for account in accounts {
+            if account.hide_from_reports {
+                continue;
+            }
+            let opening = i128::from(account.opening_balance_minor);
+            let (mut prior, mut current) = match account.opening_date.as_deref() {
+                None => {
+                    legacy_opening_account_count += 1;
+                    (opening, opening)
+                }
+                Some(opening_date) if is_valid_calendar_date(opening_date) => (
+                    if opening_date < prior_end.as_str() {
+                        opening
+                    } else {
+                        0
+                    },
+                    if opening_date < current_end.as_str() {
+                        opening
+                    } else {
+                        0
+                    },
+                ),
+                Some(_) => {
+                    return Err(AppError::Conflict(format!(
+                        "account {} has an invalid opening date",
+                        account.id
+                    )))
+                }
+            };
+            prior += prior_deltas.get(&account.id).copied().unwrap_or_default();
+            current += current_deltas.get(&account.id).copied().unwrap_or_default();
+            prior_net_worth += prior;
+            current_net_worth += current;
+            let key = match account.account_group.as_str() {
+                "asset" => "asset",
+                "liability" => "liability",
+                _ => "unclassified",
+            };
+            grouped
+                .entry(key.to_string())
+                .or_default()
+                .push((account, prior, current));
+        }
+
+        let definitions = [
+            ("asset", "Assets"),
+            ("liability", "Liabilities"),
+            ("unclassified", "Unclassified"),
+        ];
+        let mut groups = Vec::new();
+        for (key, label) in definitions {
+            let mut rows = grouped.remove(key).unwrap_or_default();
+            rows.sort_by(|left, right| {
+                let left_label = account_type_definition(&left.0.account_type)
+                    .map(|definition| definition.label)
+                    .unwrap_or("Unclassified");
+                let right_label = account_type_definition(&right.0.account_type)
+                    .map(|definition| definition.label)
+                    .unwrap_or("Unclassified");
+                left_label
+                    .cmp(right_label)
+                    .then_with(|| left.0.name.cmp(&right.0.name))
+                    .then_with(|| left.0.id.cmp(&right.0.id))
+            });
+            let prior_subtotal = rows.iter().map(|row| row.1).sum::<i128>();
+            let current_subtotal = rows.iter().map(|row| row.2).sum::<i128>();
+            let accounts = rows
+                .into_iter()
+                .map(|(account, prior, current)| {
+                    Ok(BalanceSheetAccount {
+                        account_id: account.id,
+                        name: account.name,
+                        account_type_label: account_type_definition(&account.account_type)
+                            .map(|definition| definition.label.to_string())
+                            .unwrap_or_else(|| "Unclassified".to_string()),
+                        account_type: account.account_type,
+                        prior_minor: checked_i64(prior, "account balance")?,
+                        current_minor: checked_i64(current, "account balance")?,
+                    })
+                })
+                .collect::<AppResult<Vec<_>>>()?;
+            groups.push(BalanceSheetGroup {
+                key: key.to_string(),
+                label: label.to_string(),
+                accounts,
+                prior_subtotal_minor: checked_i64(prior_subtotal, "balance-sheet subtotal")?,
+                current_subtotal_minor: checked_i64(current_subtotal, "balance-sheet subtotal")?,
+            });
+        }
+
+        Ok(BalanceSheetReport {
+            month: month.to_string(),
+            prior_month,
+            prior_date,
+            current_date,
+            groups,
+            prior_net_worth_minor: checked_i64(prior_net_worth, "net worth")?,
+            current_net_worth_minor: checked_i64(current_net_worth, "net worth")?,
+            invalid_date_entry_count: checked_i64(
+                invalid_date_entry_count,
+                "invalid-date entry count",
+            )?,
+            legacy_opening_account_count: checked_i64(
+                legacy_opening_account_count,
+                "legacy opening account count",
             )?,
         })
     }

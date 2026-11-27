@@ -30,6 +30,59 @@ async fn daily_report(app: &Router, anchor_date: &str) -> (StatusCode, Value) {
     .await
 }
 
+async fn balance_report(app: &Router, month: &str) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "GET",
+        &format!("/api/reports/balance-sheet?month={month}"),
+        json!({}),
+    )
+    .await
+}
+
+async fn create_typed_account(
+    app: &Router,
+    name: &str,
+    account_type: &str,
+    opening_balance_minor: i64,
+    opening_date: Option<&str>,
+) -> i64 {
+    let (status, body) = send_json(
+        app,
+        "POST",
+        "/api/accounts",
+        json!({
+            "name": name,
+            "currency": "INR",
+            "account_type": account_type,
+            "opening_balance_minor": opening_balance_minor,
+            "opening_date": opening_date
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_i64().unwrap()
+}
+
+fn balance_group<'a>(body: &'a Value, key: &str) -> &'a Value {
+    body["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["key"] == key)
+        .unwrap()
+}
+
+fn balance_account<'a>(body: &'a Value, account_id: i64) -> &'a Value {
+    body["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|group| group["accounts"].as_array().unwrap())
+        .find(|account| account["account_id"] == account_id)
+        .unwrap()
+}
+
 async fn create_report_category(
     app: &Router,
     kind: &str,
@@ -1051,4 +1104,286 @@ async fn daily_summary_rejects_invalid_or_early_anchors_and_controls_overflow() 
         body["error"],
         "daily expense total is outside the supported integer range"
     );
+}
+
+#[tokio::test]
+async fn balance_sheet_reconciles_signed_groups_opening_rules_transfers_and_visibility() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_typed_account(
+        &app,
+        "Balance checking",
+        "checking",
+        100_000,
+        Some("2026-11-15"),
+    )
+    .await;
+    let savings =
+        create_typed_account(&app, "Balance legacy savings", "savings", 50_000, None).await;
+    let negative_asset = create_typed_account(
+        &app,
+        "Balance negative asset",
+        "cash",
+        0,
+        Some("2026-01-01"),
+    )
+    .await;
+    let card_debt = create_typed_account(
+        &app,
+        "Balance card debt",
+        "credit_card",
+        0,
+        Some("2026-01-01"),
+    )
+    .await;
+    let card_credit = create_typed_account(
+        &app,
+        "Balance card credit",
+        "credit_card",
+        0,
+        Some("2026-01-01"),
+    )
+    .await;
+    let unclassified = create_account(&app, "Balance unclassified", 7_000).await;
+    let picker_hidden =
+        create_typed_account(&app, "Balance picker hidden", "checking", 1_000, None).await;
+    let report_hidden =
+        create_typed_account(&app, "Balance report hidden", "checking", 999_999, None).await;
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{picker_hidden}"),
+        json!({ "hide_from_selection": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{report_hidden}"),
+        json!({ "hide_from_reports": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    for (kind, account_id, amount, name, date) in [
+        (
+            "expense",
+            checking,
+            1_000,
+            "Before known opening",
+            "2026-10-20",
+        ),
+        (
+            "expense",
+            checking,
+            1_000,
+            "Current checking expense",
+            "2026-11-01",
+        ),
+        (
+            "income",
+            savings,
+            10_000,
+            "Legacy savings income",
+            "2026-10-10",
+        ),
+        (
+            "expense",
+            savings,
+            5_000,
+            "Legacy savings expense",
+            "2026-11-05",
+        ),
+        (
+            "expense",
+            negative_asset,
+            5_000,
+            "Negative asset",
+            "2026-10-05",
+        ),
+        (
+            "expense",
+            card_debt,
+            20_000,
+            "Card prior debt",
+            "2026-10-10",
+        ),
+        (
+            "expense",
+            card_debt,
+            5_000,
+            "Card current debt",
+            "2026-11-05",
+        ),
+        (
+            "income",
+            unclassified,
+            2_000,
+            "Unclassified income",
+            "2026-11-10",
+        ),
+    ] {
+        create_entry_at(&app, kind, account_id, amount, name, None, date).await;
+    }
+    for (from, to, amount, name, date) in [
+        (checking, card_debt, 15_000, "Card payment", "2026-11-10"),
+        (
+            checking,
+            card_credit,
+            3_000,
+            "Card credit transfer",
+            "2026-11-11",
+        ),
+    ] {
+        let (status, body) = send_json(
+            &app,
+            "POST",
+            "/api/transfers",
+            json!({
+                "from_account_id": from,
+                "to_account_id": to,
+                "amount_minor": amount,
+                "name": name,
+                "occurred_at": format!("{date}T12:00:00")
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    for (account_id, kind, name) in [
+        (checking, "expense", "Invalid visible expense"),
+        (unclassified, "income", "Invalid visible income"),
+        (report_hidden, "expense", "Invalid hidden expense"),
+    ] {
+        sqlx::query(
+            "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+             VALUES (?, ?, 100, ?, 'legacy invalid', 'not-a-date', '2026-11-01T00:00:00Z', NULL)",
+        )
+        .bind(kind)
+        .bind(account_id)
+        .bind(name)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (status, body) = balance_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["prior_date"], "2026-10-31");
+    assert_eq!(body["current_date"], "2026-11-30");
+    assert_eq!(body["invalid_date_entry_count"], 2);
+    assert_eq!(body["legacy_opening_account_count"], 3);
+    assert_eq!(balance_account(&body, checking)["prior_minor"], -1_000);
+    assert_eq!(balance_account(&body, checking)["current_minor"], 80_000);
+    assert_eq!(balance_account(&body, savings)["prior_minor"], 60_000);
+    assert_eq!(balance_account(&body, savings)["current_minor"], 55_000);
+    assert_eq!(
+        balance_account(&body, negative_asset)["current_minor"],
+        -5_000
+    );
+    assert_eq!(balance_account(&body, card_debt)["prior_minor"], -20_000);
+    assert_eq!(balance_account(&body, card_debt)["current_minor"], -10_000);
+    assert_eq!(balance_account(&body, card_credit)["current_minor"], 3_000);
+    assert_eq!(balance_account(&body, unclassified)["prior_minor"], 7_000);
+    assert_eq!(balance_account(&body, unclassified)["current_minor"], 9_000);
+    assert_eq!(
+        balance_account(&body, picker_hidden)["current_minor"],
+        1_000
+    );
+    assert!(!body.to_string().contains("Balance report hidden"));
+
+    assert_eq!(
+        balance_group(&body, "asset")["prior_subtotal_minor"],
+        55_000
+    );
+    assert_eq!(
+        balance_group(&body, "asset")["current_subtotal_minor"],
+        131_000
+    );
+    assert_eq!(
+        balance_group(&body, "liability")["prior_subtotal_minor"],
+        -20_000
+    );
+    assert_eq!(
+        balance_group(&body, "liability")["current_subtotal_minor"],
+        -7_000
+    );
+    assert_eq!(
+        balance_group(&body, "unclassified")["prior_subtotal_minor"],
+        7_000
+    );
+    assert_eq!(
+        balance_group(&body, "unclassified")["current_subtotal_minor"],
+        9_000
+    );
+    assert_eq!(body["prior_net_worth_minor"], 42_000);
+    assert_eq!(body["current_net_worth_minor"], 133_000);
+}
+
+#[tokio::test]
+async fn balance_sheet_opening_date_edits_gate_only_the_baseline_not_posted_history() {
+    let (app, _pool, _directory) = setup().await;
+    let account_id = create_typed_account(
+        &app,
+        "Opening date correction",
+        "checking",
+        100_000,
+        Some("2026-01-01"),
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        account_id,
+        1_000,
+        "Posted before metadata correction",
+        None,
+        "2026-10-20",
+    )
+    .await;
+    let (status, before) = balance_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    assert_eq!(balance_account(&before, account_id)["prior_minor"], 99_000);
+    assert_eq!(
+        balance_account(&before, account_id)["current_minor"],
+        99_000
+    );
+
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{account_id}"),
+        json!({ "opening_date": "2026-12-01" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, after) = balance_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(balance_account(&after, account_id)["prior_minor"], -1_000);
+    assert_eq!(balance_account(&after, account_id)["current_minor"], -1_000);
+}
+
+#[tokio::test]
+async fn balance_sheet_empty_invalid_month_and_overflow_are_explicit() {
+    let (app, _pool, _directory) = setup().await;
+    let (status, empty) = balance_report(&app, "2030-05").await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    assert_eq!(empty["groups"].as_array().unwrap().len(), 3);
+    assert!(empty["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|group| group["accounts"] == json!([])));
+    assert_eq!(empty["prior_net_worth_minor"], 0);
+    assert_eq!(empty["current_net_worth_minor"], 0);
+    for month in ["2026-13", "2026-00", "0001-01", "not-a-month"] {
+        let (status, body) = balance_report(&app, month).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{month}: {body}");
+    }
+
+    create_account(&app, "Balance overflow one", i64::MAX).await;
+    create_account(&app, "Balance overflow two", i64::MAX).await;
+    let (status, body) = balance_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("integer range"));
 }

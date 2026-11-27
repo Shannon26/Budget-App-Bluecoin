@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./shared/api";
 import { localDateValue } from "./shared/date";
 import type { BudgetState } from "./shared/types";
+import BalanceSheet from "./features/reports/BalanceSheet";
 import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
 import Ledger from "./features/ledger/Ledger";
@@ -20,7 +21,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "budgets" | "reports" | "items";
+type Tab = "overview" | "ledger" | "categories" | "budgets" | "reports" | "items" | "balance";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -137,6 +138,15 @@ export default function App() {
         >
           Items Summary
         </button>
+        <button
+          data-testid="nav-balance-sheet"
+          className={activeTab === "balance" ? "active" : ""}
+          aria-current={activeTab === "balance" ? "page" : undefined}
+          type="button"
+          onClick={() => setActiveTab("balance")}
+        >
+          Balance Sheet
+        </button>
       </nav>
 
       <main>
@@ -214,6 +224,12 @@ export default function App() {
         {activeTab === "items" && (
           <section className="panel ledger-panel">
             <ItemsSummary />
+          </section>
+        )}
+
+        {activeTab === "balance" && (
+          <section className="panel ledger-panel">
+            <BalanceSheet />
           </section>
         )}
       </main>

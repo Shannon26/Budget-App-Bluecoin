@@ -17,6 +17,11 @@ pub struct DailySummaryReportQuery {
     pub anchor_date: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BalanceSheetReportQuery {
+    pub month: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportPeriod {
     pub start_date: String,
@@ -109,4 +114,37 @@ pub struct DailySummaryReport {
     pub average_30_minor: i64,
     pub days: Vec<DailySpending>,
     pub invalid_date_entry_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BalanceSheetAccount {
+    pub account_id: i64,
+    pub name: String,
+    pub account_type: String,
+    pub account_type_label: String,
+    pub prior_minor: i64,
+    pub current_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BalanceSheetGroup {
+    pub key: String,
+    pub label: String,
+    pub accounts: Vec<BalanceSheetAccount>,
+    pub prior_subtotal_minor: i64,
+    pub current_subtotal_minor: i64,
+}
+
+/// Cumulative signed balances at the prior and selected month-end.
+#[derive(Debug, Clone, Serialize)]
+pub struct BalanceSheetReport {
+    pub month: String,
+    pub prior_month: String,
+    pub prior_date: String,
+    pub current_date: String,
+    pub groups: Vec<BalanceSheetGroup>,
+    pub prior_net_worth_minor: i64,
+    pub current_net_worth_minor: i64,
+    pub invalid_date_entry_count: i64,
+    pub legacy_opening_account_count: i64,
 }

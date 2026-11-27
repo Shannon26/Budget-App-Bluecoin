@@ -117,6 +117,35 @@ export interface DailySummaryReport {
   invalid_date_entry_count: number;
 }
 
+export interface BalanceSheetAccount {
+  account_id: number;
+  name: string;
+  account_type: string;
+  account_type_label: string;
+  prior_minor: number;
+  current_minor: number;
+}
+
+export interface BalanceSheetGroup {
+  key: string;
+  label: string;
+  accounts: BalanceSheetAccount[];
+  prior_subtotal_minor: number;
+  current_subtotal_minor: number;
+}
+
+export interface BalanceSheetReport {
+  month: string;
+  prior_month: string;
+  prior_date: string;
+  current_date: string;
+  groups: BalanceSheetGroup[];
+  prior_net_worth_minor: number;
+  current_net_worth_minor: number;
+  invalid_date_entry_count: number;
+  legacy_opening_account_count: number;
+}
+
 export interface Totals {
   income_minor: number;
   expense_minor: number;

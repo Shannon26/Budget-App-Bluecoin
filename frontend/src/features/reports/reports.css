@@ -336,6 +336,43 @@
   text-align: center !important;
 }
 
+.balance-summary-table {
+  min-width: 640px;
+}
+
+.balance-net-row > th,
+.balance-net-row > td {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.balance-group-grid {
+  grid-template-columns: 1fr;
+}
+
+.balance-account-table {
+  min-width: 560px;
+}
+
+.balance-account-name,
+.balance-account-type {
+  display: block;
+}
+
+.balance-account-type {
+  margin-top: 3px;
+  color: #819087;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.balance-subtotal-row > th,
+.balance-subtotal-row > td {
+  border-top: 2px solid #dfe4d9;
+  color: var(--ink);
+  font-weight: 800;
+}
+
 @media (max-width: 900px) {
   .report-period-grid,
   .report-total-grid {

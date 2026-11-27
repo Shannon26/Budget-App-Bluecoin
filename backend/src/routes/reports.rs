@@ -27,3 +27,10 @@ pub(crate) async fn daily_summary(
         state.store.daily_summary_report(&query.anchor_date).await?,
     ))
 }
+
+pub(crate) async fn balance_sheet(
+    State(state): State<AppState>,
+    Query(query): Query<BalanceSheetReportQuery>,
+) -> AppResult<Json<BalanceSheetReport>> {
+    Ok(Json(state.store.balance_sheet_report(&query.month).await?))
+}

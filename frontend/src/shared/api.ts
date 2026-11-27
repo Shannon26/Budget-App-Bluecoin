@@ -1,6 +1,7 @@
 import type {
   AccountMetadata,
   AccountUpdate,
+  BalanceSheetReport,
   BudgetState,
   Category,
   DailySummaryReport,
@@ -69,6 +70,8 @@ export const api = {
     request<ItemsSummaryReport>(`/reports/items-summary?month=${encodeURIComponent(month)}`),
   dailySummary: (anchorDate: string) =>
     request<DailySummaryReport>(`/reports/daily-summary?anchor_date=${encodeURIComponent(anchorDate)}`),
+  balanceSheet: (month: string) =>
+    request<BalanceSheetReport>(`/reports/balance-sheet?month=${encodeURIComponent(month)}`),
   createAccount: (input: {
     name: string;
     currency: string;

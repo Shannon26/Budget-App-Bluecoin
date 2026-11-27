@@ -2317,3 +2317,222 @@ test("Budget invalid-date warning opens an authoritative correction flow and pre
   for (const entryId of entryIds) await request.delete(`/api/transactions/${entryId}`);
   await request.delete(`/api/categories/${categoryId}`);
 });
+
+test("Balance Sheet reconciles signed month-end groups and keeps report states scoped", async ({
+  page,
+  request,
+}) => {
+  const initialState = await (await request.get("/api/state")).json();
+  const previousVisibility = await Promise.all(
+    initialState.accounts.map(async (account: { id: number; hide_from_reports: boolean }) => {
+      const response = await request.put(`/api/accounts/${account.id}`, {
+        data: { hide_from_reports: true },
+      });
+      expect(response.ok()).toBeTruthy();
+      return { id: account.id, hidden: account.hide_from_reports };
+    }),
+  );
+  try {
+  const selectedMonth = "2035-03";
+  const priorMonth = "2035-02";
+  const accountIds: number[] = [];
+  for (const [name, type, opening, openingDate] of [
+    ["F08 checking", "checking", 100000, "2035-03-15"],
+    ["F08 legacy savings", "savings", 50000, null],
+    ["F08 negative asset", "cash", 0, "2035-01-01"],
+    ["F08 card debt", "credit_card", 0, "2035-01-01"],
+    ["F08 card credit", "credit_card", 0, "2035-01-01"],
+    ["F08 unclassified", "unclassified", 7000, null],
+    ["F08 picker hidden", "checking", 1000, null],
+    ["F08 report hidden", "checking", 999999, null],
+  ] as const) {
+    const response = await request.post("/api/accounts", {
+      data: {
+        name,
+        currency: "INR",
+        account_type: type,
+        opening_balance_minor: opening,
+        opening_date: openingDate,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [checkingId, savingsId, negativeId, debtId, creditId, unclassifiedId, pickerId, hiddenId] =
+    accountIds;
+  expect(
+    (
+      await request.put(`/api/accounts/${pickerId}`, {
+        data: { hide_from_selection: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  expect(
+    (
+      await request.put(`/api/accounts/${hiddenId}`, {
+        data: { hide_from_reports: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  const entryIds: number[] = [];
+  for (const [kind, accountId, amount, name, date] of [
+    ["expense", checkingId, 2000, "F08 before known opening", "2035-02-20T12:00:00"],
+    ["expense", checkingId, 1000, "F08 current checking expense", "2035-03-01T12:00:00"],
+    ["income", savingsId, 10000, "F08 legacy income", "2035-02-10T12:00:00"],
+    ["expense", savingsId, 5000, "F08 legacy expense", "2035-03-05T12:00:00"],
+    ["expense", negativeId, 5000, "F08 negative asset expense", "2035-02-05T12:00:00"],
+    ["expense", debtId, 20000, "F08 prior card debt", "2035-02-10T12:00:00"],
+    ["expense", debtId, 5000, "F08 current card debt", "2035-03-05T12:00:00"],
+    ["income", unclassifiedId, 2000, "F08 unclassified income", "2035-03-10T12:00:00"],
+  ] as const) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind,
+        account_id: accountId,
+        amount_minor: amount,
+        name,
+        category_id: null,
+        occurred_at: date,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    entryIds.push((await response.json()).id as number);
+  }
+  const transferIds: number[] = [];
+  for (const [toId, amount, name, date] of [
+    [debtId, 15000, "F08 card payment", "2035-03-10T12:00:00"],
+    [creditId, 3000, "F08 card credit transfer", "2035-03-11T12:00:00"],
+  ] as const) {
+    const response = await request.post("/api/transfers", {
+      data: {
+        from_account_id: checkingId,
+        to_account_id: toId,
+        amount_minor: amount,
+        name,
+        occurred_at: date,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    transferIds.push((await response.json()).id as number);
+  }
+
+  const database = new DatabaseSync("/tmp/opencode/paisa-e2e.db");
+  const invalidDate = database.prepare(
+    "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id) VALUES (?, ?, 100, ?, 'legacy invalid', 'not-a-date', '2035-03-01T00:00:00Z', NULL)",
+  );
+  const invalidEntryIds = [
+    Number(invalidDate.run("expense", checkingId, "F08 invalid visible expense").lastInsertRowid),
+    Number(invalidDate.run("income", unclassifiedId, "F08 invalid visible income").lastInsertRowid),
+    Number(invalidDate.run("expense", hiddenId, "F08 invalid hidden expense").lastInsertRowid),
+  ];
+  database.close();
+
+  const releasePrior = deferred();
+  const priorStarted = deferred();
+  const priorFinished = deferred();
+  await page.route("**/api/reports/balance-sheet?**", async (route) => {
+    const month = new URL(route.request().url()).searchParams.get("month");
+    if (month === priorMonth) {
+      priorStarted.resolve();
+      const response = await route.fetch();
+      await releasePrior.promise;
+      await route.fulfill({ response });
+      priorFinished.resolve();
+      return;
+    }
+    if (month === "2036-01") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        json: {
+          month: "2036-01",
+          prior_month: "2035-12",
+          prior_date: "2035-12-31",
+          current_date: "2036-01-31",
+          groups: ["asset", "liability", "unclassified"].map((key) => ({
+            key,
+            label: key,
+            accounts: [],
+            prior_subtotal_minor: 0,
+            current_subtotal_minor: 0,
+          })),
+          prior_net_worth_minor: 0,
+          current_net_worth_minor: 0,
+          invalid_date_entry_count: 0,
+          legacy_opening_account_count: 0,
+        },
+      });
+      return;
+    }
+    if (month === "2036-02") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Balance Sheet is unavailable" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByTestId("nav-balance-sheet").click();
+  await expect(page.getByTestId("nav-balance-sheet")).toHaveAttribute("aria-current", "page");
+  await page.getByTestId("balance-month").fill(selectedMonth);
+  await expect(page.getByTestId("balance-asset-prior")).toHaveText("₹540.00");
+  await expect(page.getByTestId("balance-asset-current")).toHaveText("₹1,300.00");
+  await expect(page.getByTestId("balance-liability-prior")).toHaveText("-₹200.00");
+  await expect(page.getByTestId("balance-liability-current")).toHaveText("-₹70.00");
+  await expect(page.getByTestId("balance-unclassified-prior")).toHaveText("₹70.00");
+  await expect(page.getByTestId("balance-unclassified-current")).toHaveText("₹90.00");
+  await expect(page.getByTestId("balance-net-prior")).toHaveText("₹410.00");
+  await expect(page.getByTestId("balance-net-current")).toHaveText("₹1,320.00");
+  await expect(page.getByTestId(`balance-account-${checkingId}-prior`)).toHaveText("-₹20.00");
+  await expect(page.getByTestId(`balance-account-${checkingId}-current`)).toHaveText("₹790.00");
+  await expect(page.getByTestId(`balance-account-${debtId}-current`)).toHaveText("-₹100.00");
+  await expect(page.getByTestId(`balance-account-${creditId}-current`)).toHaveText("₹30.00");
+  await expect(page.getByTestId(`balance-account-${negativeId}-current`)).toHaveText("-₹50.00");
+  await expect(page.getByTestId(`balance-account-${unclassifiedId}-current`)).toHaveText("₹90.00");
+  await expect(page.getByTestId(`balance-account-${pickerId}-current`)).toHaveText("₹10.00");
+  await expect(page.getByText("F08 report hidden", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("balance-invalid-dates")).toContainText(
+    "2 posted entries with invalid legacy dates",
+  );
+  await expect(page.getByTestId("balance-opening-policy")).toContainText("3 accounts have no opening date");
+
+  await page.getByTestId("balance-month").fill(priorMonth);
+  await priorStarted.promise;
+  await expect(page.getByTestId("balance-loading")).toBeVisible();
+  await expect(page.getByTestId("balance-net-current")).toHaveText("Pending…");
+  await page.getByTestId("balance-month").fill(selectedMonth);
+  await expect(page.getByTestId("balance-net-current")).toHaveText("₹1,320.00");
+  releasePrior.resolve();
+  await priorFinished.promise;
+  await expect(page.getByTestId("balance-net-current")).toHaveText("₹1,320.00");
+
+  await page.getByTestId("balance-month").fill(priorMonth);
+  await expect(page.getByTestId("balance-net-current")).toHaveText("₹410.00");
+  await expect(page.getByTestId(`balance-account-${checkingId}-current`)).toHaveText("-₹20.00");
+
+  await page.getByTestId("balance-month").fill("2036-01");
+  await expect(page.getByTestId("balance-empty")).toBeVisible();
+  await expect(page.getByTestId("balance-net-current")).toHaveText("₹0.00");
+  await page.getByTestId("balance-month").fill("2036-02");
+  await expect(page.getByTestId("balance-error")).toContainText("Balance Sheet is unavailable");
+  await expect(page.getByTestId("balance-net-current")).toHaveText("Unavailable");
+  await expect(page.getByTestId("balance-empty")).toHaveCount(0);
+
+  for (const transferId of transferIds) await request.delete(`/api/transfers/${transferId}`);
+  for (const entryId of [...entryIds, ...invalidEntryIds]) {
+    await request.delete(`/api/transactions/${entryId}`);
+  }
+  } finally {
+    for (const account of previousVisibility) {
+      const response = await request.put(`/api/accounts/${account.id}`, {
+        data: { hide_from_reports: account.hidden },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+  }
+});
