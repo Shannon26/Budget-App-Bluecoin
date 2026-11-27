@@ -3,6 +3,17 @@ import { isAccountSelectable } from "../accounts/accountClassification";
 import LabelMultiSelect from "../labels/LabelMultiSelect";
 import type { OverviewForms } from "../overview/useOverviewForms";
 
+const clearAfterSaveOptions = [
+  { value: "name", label: "Name" },
+  { value: "account", label: "Account" },
+  { value: "category", label: "Category" },
+  { value: "amount", label: "Amount" },
+  { value: "date", label: "Date" },
+  { value: "note", label: "Note" },
+  { value: "labels", label: "Labels" },
+  { value: "reconciled", label: "Reconciled status" },
+] as const;
+
 export default function TransactionForm({
   data,
   forms,
@@ -164,14 +175,61 @@ export default function TransactionForm({
           />
           Reconciled
         </label>
-        <button
-          className={`primary-button ${forms.transactionKind === "income" ? "income-button" : ""}`}
-          disabled={forms.submitting || selectableAccounts.length === 0}
-        >
-          {forms.submitting
-            ? "Saving…"
-            : `Record ${forms.transactionKind === "income" ? "income" : "expense"}`}
-        </button>
+        <fieldset className="save-add-settings" disabled={forms.submitting}>
+          <legend>Save and add another</legend>
+          <p id="save-add-settings-hint" className="field-hint">
+            Choose fields cleared after a successful Save and add another. Account resets to
+            the first selectable account, Date to today, and Amount to blank. Stored in this
+            browser when available. Transaction type is retained.
+          </p>
+          <div className="save-add-settings-grid">
+            {clearAfterSaveOptions.map((option) => (
+              <label className="check-label" key={option.value}>
+                <input
+                  type="checkbox"
+                  data-testid={`clear-after-save-${option.value}`}
+                  checked={forms.transactionClearFields.includes(option.value)}
+                  onChange={(event) => {
+                    const selected = event.target.checked
+                      ? [...forms.transactionClearFields, option.value]
+                      : forms.transactionClearFields.filter((field) => field !== option.value);
+                    forms.setTransactionClearFields(selected);
+                  }}
+                  aria-describedby="save-add-settings-hint"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+          <button
+            className="text-button"
+            data-testid="reset-clear-after-save"
+            type="button"
+            onClick={forms.resetTransactionClearFields}
+          >
+            Restore default clearing
+          </button>
+        </fieldset>
+        <div className="transaction-save-actions">
+          <button
+            className={`primary-button ${forms.transactionKind === "income" ? "income-button" : ""}`}
+            type="submit"
+            disabled={forms.submitting || selectableAccounts.length === 0}
+          >
+            {forms.submitting
+              ? "Saving…"
+              : `Record ${forms.transactionKind === "income" ? "income" : "expense"}`}
+          </button>
+          <button
+            className="secondary-button"
+            data-testid="save-add-another"
+            type="button"
+            onClick={forms.handleTransactionAndAddAnother}
+            disabled={forms.submitting || selectableAccounts.length === 0}
+          >
+            {forms.submitting ? "Saving…" : "Save and add another"}
+          </button>
+        </div>
       </form>
     </section>
   );

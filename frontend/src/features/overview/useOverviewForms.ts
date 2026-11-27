@@ -10,6 +10,27 @@ interface SelectionState {
 }
 
 const UNNAMED_TRANSACTION_NAME_KEY = "paisa.unnamedTransactionName";
+const TRANSACTION_CLEAR_FIELDS_KEY = "paisa.transactionClearAfterSave";
+const TRANSACTION_CLEAR_FIELDS = [
+  "name",
+  "account",
+  "category",
+  "amount",
+  "date",
+  "note",
+  "labels",
+  "reconciled",
+] as const;
+
+type TransactionClearField = (typeof TRANSACTION_CLEAR_FIELDS)[number];
+
+const DEFAULT_TRANSACTION_CLEAR_FIELDS: TransactionClearField[] = [
+  "name",
+  "amount",
+  "note",
+  "labels",
+  "reconciled",
+];
 
 function readUnnamedTransactionName(): string {
   try {
@@ -18,6 +39,19 @@ function readUnnamedTransactionName(): string {
       : window.localStorage.getItem(UNNAMED_TRANSACTION_NAME_KEY) ?? "";
   } catch {
     return "";
+  }
+}
+
+function readTransactionClearFields(): TransactionClearField[] {
+  try {
+    if (typeof window === "undefined") return [...DEFAULT_TRANSACTION_CLEAR_FIELDS];
+    const stored = window.localStorage.getItem(TRANSACTION_CLEAR_FIELDS_KEY);
+    if (!stored) return [...DEFAULT_TRANSACTION_CLEAR_FIELDS];
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [...DEFAULT_TRANSACTION_CLEAR_FIELDS];
+    return TRANSACTION_CLEAR_FIELDS.filter((field) => parsed.includes(field));
+  } catch {
+    return [...DEFAULT_TRANSACTION_CLEAR_FIELDS];
   }
 }
 
@@ -41,6 +75,7 @@ export function useOverviewForms(
   onMessage: (message: string, error?: boolean) => void,
 ) {
   const [submitting, setSubmitting] = useState(false);
+  const transactionSubmission = useRef(false);
 
   const [accountName, setAccountName] = useState("");
   const [accountType, setAccountType] = useState("unclassified");
@@ -70,6 +105,21 @@ export function useOverviewForms(
       // The controlled in-session preference remains usable when storage is unavailable.
     }
   }, []);
+  const [transactionClearFields, setTransactionClearFieldsState] = useState(
+    readTransactionClearFields,
+  );
+  const setTransactionClearFields = useCallback((fields: TransactionClearField[]) => {
+    const normalized = TRANSACTION_CLEAR_FIELDS.filter((field) => fields.includes(field));
+    setTransactionClearFieldsState(normalized);
+    try {
+      window.localStorage.setItem(TRANSACTION_CLEAR_FIELDS_KEY, JSON.stringify(normalized));
+    } catch {
+      // The controlled in-session settings remain usable when storage is unavailable.
+    }
+  }, []);
+  const resetTransactionClearFields = useCallback(() => {
+    setTransactionClearFields([...DEFAULT_TRANSACTION_CLEAR_FIELDS]);
+  }, [setTransactionClearFields]);
   const [transactionAccountId, setTransactionAccountIdState] = useState("");
   const transactionAccountSelection = useRef<SelectionState>({ initialized: false });
   const setTransactionAccountId = useCallback((value: string) => {
@@ -234,8 +284,25 @@ export function useOverviewForms(
     }
   }
 
-  async function handleTransaction(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function resetTransactionFields(fields: TransactionClearField[]) {
+    if (fields.includes("name")) setTransactionName("");
+    if (fields.includes("account")) {
+      transactionAccountSelection.current.initialized = selectableAccounts.length > 0;
+      setTransactionAccountIdState(
+        selectableAccounts[0] ? `${selectableAccounts[0].id}` : "",
+      );
+    }
+    if (fields.includes("category")) setTransactionCategoryId("");
+    if (fields.includes("amount")) setTransactionAmount("");
+    if (fields.includes("date")) setTransactionDate(localDateValue());
+    if (fields.includes("note")) setTransactionNote("");
+    if (fields.includes("labels")) setTransactionLabelIds([]);
+    if (fields.includes("reconciled")) setTransactionReconciled(false);
+  }
+
+  async function saveTransaction(addAnother: boolean) {
+    if (transactionSubmission.current) return;
+    transactionSubmission.current = true;
     setSubmitting(true);
     onMessage("", true);
     try {
@@ -255,18 +322,27 @@ export function useOverviewForms(
         occurred_at: dateTimeValue(transactionDate),
         labels: transactionLabelIds,
       });
-      setTransactionName("");
-      setTransactionAmount("");
-      setTransactionNote("");
-      setTransactionReconciled(false);
-      setTransactionLabelIds([]);
-      onMessage(`${transactionKind === "income" ? "Income" : "Expense"} recorded.`);
+      resetTransactionFields(
+        addAnother ? transactionClearFields : DEFAULT_TRANSACTION_CLEAR_FIELDS,
+      );
+      const label = transactionKind === "income" ? "Income" : "Expense";
+      onMessage(addAnother ? `${label} recorded. Ready for another.` : `${label} recorded.`);
       await refresh();
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : "Could not record transaction", true);
     } finally {
+      transactionSubmission.current = false;
       setSubmitting(false);
     }
+  }
+
+  function handleTransaction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void saveTransaction(false);
+  }
+
+  function handleTransactionAndAddAnother() {
+    void saveTransaction(true);
   }
 
   async function handleTransfer(event: FormEvent<HTMLFormElement>) {
@@ -334,6 +410,9 @@ export function useOverviewForms(
     setTransactionName,
     unnamedTransactionName,
     setUnnamedTransactionName,
+    transactionClearFields,
+    setTransactionClearFields,
+    resetTransactionClearFields,
     transactionAccountId,
     setTransactionAccountId,
     transactionCategoryId,
@@ -350,6 +429,7 @@ export function useOverviewForms(
     setTransactionLabelIds,
     transactionCategories,
     handleTransaction,
+    handleTransactionAndAddAnother,
     transferName,
     setTransferName,
     transferFrom,
