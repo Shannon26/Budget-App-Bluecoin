@@ -229,6 +229,26 @@
   background: #ecefe8;
 }
 
+.unnamed-name-preference {
+  display: grid;
+  gap: 7px;
+}
+
+.unnamed-name-preference-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.unnamed-name-preference .secondary-button {
+  min-height: 44px;
+}
+
+.unnamed-name-preference .field-hint {
+  margin: -3px 0 0;
+}
+
 .transfer-account-row {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: end;

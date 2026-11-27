@@ -44,15 +44,45 @@ export default function TransactionForm({
       </div>
       <form className="stack-form" onSubmit={forms.handleTransaction}>
         <label>
-          Name
+          Name <span className="optional">optional</span>
           <input
             data-testid="transaction-name"
             value={forms.transactionName}
             onChange={(event) => forms.setTransactionName(event.target.value)}
             placeholder="e.g. Dinner or Monthly salary"
-            required
           />
         </label>
+        <div className="unnamed-name-preference">
+          <label htmlFor="unnamed-transaction-name">
+            Preferred name for unnamed transactions
+          </label>
+          <div className="unnamed-name-preference-controls">
+            <input
+              id="unnamed-transaction-name"
+              data-testid="unnamed-transaction-name"
+              value={forms.unnamedTransactionName}
+              onChange={(event) => forms.setUnnamedTransactionName(event.target.value)}
+              placeholder="e.g. Everyday expense"
+              maxLength={120}
+              disabled={forms.submitting}
+              aria-describedby="unnamed-transaction-name-hint"
+            />
+            <button
+              className="secondary-button"
+              data-testid="clear-unnamed-transaction-name"
+              type="button"
+              onClick={() => forms.setUnnamedTransactionName("")}
+              disabled={forms.submitting || !forms.unnamedTransactionName.trim()}
+              aria-label="Clear preferred name"
+            >
+              Clear
+            </button>
+          </div>
+          <p id="unnamed-transaction-name-hint" className="field-hint">
+            Saved in this browser when available. Used only when Name is blank; a typed name
+            takes precedence.
+          </p>
+        </div>
         <label>
           Account
           <select
