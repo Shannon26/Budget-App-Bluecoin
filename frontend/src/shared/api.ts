@@ -4,6 +4,7 @@ import type {
   BudgetState,
   Category,
   FilterDefinition,
+  ItemsSummaryReport,
   LedgerEntry,
   LedgerPage,
   MonthlyCategoryBudgets,
@@ -63,6 +64,8 @@ export const api = {
   state: () => request<BudgetState>("/state"),
   netEarnings: (month: string) =>
     request<NetEarningsReport>(`/reports/net-earnings?month=${encodeURIComponent(month)}`),
+  itemsSummary: (month: string) =>
+    request<ItemsSummaryReport>(`/reports/items-summary?month=${encodeURIComponent(month)}`),
   createAccount: (input: {
     name: string;
     currency: string;

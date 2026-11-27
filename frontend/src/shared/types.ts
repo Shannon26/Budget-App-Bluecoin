@@ -87,6 +87,21 @@ export interface NetEarningsReport {
   categories: ReportCategory[];
 }
 
+export interface ReportItem {
+  rank: number;
+  name: string;
+  total_minor: number;
+  entry_count: number;
+}
+
+export interface ItemsSummaryReport {
+  month: string;
+  current: ReportPeriod;
+  income_items: ReportItem[];
+  expense_items: ReportItem[];
+  invalid_date_entry_count: number;
+}
+
 export interface Totals {
   income_minor: number;
   expense_minor: number;

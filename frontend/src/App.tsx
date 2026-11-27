@@ -5,6 +5,7 @@ import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
 import Ledger from "./features/ledger/Ledger";
 import Overview from "./features/overview/Overview";
+import ItemsSummary from "./features/reports/ItemsSummary";
 import NetEarnings from "./features/reports/NetEarnings";
 import { useOverviewForms } from "./features/overview/useOverviewForms";
 
@@ -18,7 +19,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "budgets" | "reports";
+type Tab = "overview" | "ledger" | "categories" | "budgets" | "reports" | "items";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -116,6 +117,14 @@ export default function App() {
         >
           Net Earnings
         </button>
+        <button
+          data-testid="nav-items-summary"
+          className={activeTab === "items" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveTab("items")}
+        >
+          Items Summary
+        </button>
       </nav>
 
       <main>
@@ -172,6 +181,12 @@ export default function App() {
         {activeTab === "reports" && (
           <section className="panel ledger-panel">
             <NetEarnings />
+          </section>
+        )}
+
+        {activeTab === "items" && (
+          <section className="panel ledger-panel">
+            <ItemsSummary />
           </section>
         )}
       </main>

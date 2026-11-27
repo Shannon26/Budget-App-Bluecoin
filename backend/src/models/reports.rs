@@ -7,6 +7,11 @@ pub struct NetEarningsReportQuery {
     pub month: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ItemsSummaryReportQuery {
+    pub month: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportPeriod {
     pub start_date: String,
@@ -60,4 +65,24 @@ pub struct NetEarningsReport {
     pub prior: ReportPeriod,
     pub invalid_date_entry_count: i64,
     pub categories: Vec<ReportCategory>,
+}
+
+/// One exact transaction-name group in the selected report month.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReportItem {
+    pub rank: usize,
+    pub name: String,
+    pub total_minor: i64,
+    pub entry_count: i64,
+}
+
+/// Selected-month item/payee totals. Equal totals share a competition rank;
+/// exact names provide deterministic display order within a tie.
+#[derive(Debug, Clone, Serialize)]
+pub struct ItemsSummaryReport {
+    pub month: String,
+    pub current: ReportPeriod,
+    pub income_items: Vec<ReportItem>,
+    pub expense_items: Vec<ReportItem>,
+    pub invalid_date_entry_count: i64,
 }

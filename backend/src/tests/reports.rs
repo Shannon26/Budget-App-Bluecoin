@@ -10,6 +10,16 @@ async fn report(app: &Router, month: &str) -> (StatusCode, Value) {
     .await
 }
 
+async fn items_report(app: &Router, month: &str) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "GET",
+        &format!("/api/reports/items-summary?month={month}"),
+        json!({}),
+    )
+    .await
+}
+
 async fn create_report_category(
     app: &Router,
     kind: &str,
@@ -538,4 +548,248 @@ async fn report_overflow_and_invalid_month_are_rejected() {
         let (status, body) = report(&app, month).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{month}: {body}");
     }
+}
+
+#[tokio::test]
+async fn items_summary_groups_exact_names_ranks_ties_and_reconciles_totals() {
+    let (app, _pool, _directory) = setup().await;
+    let account_id = create_account(&app, "Items opening balance", 999_999).await;
+    for (kind, amount, name) in [
+        ("income", 1_000, "Payee"),
+        ("income", 2_500, "Payee"),
+        ("income", 2_000, "Tie Alpha"),
+        ("income", 2_000, "Tie Beta"),
+        ("income", 500, "payee"),
+        ("expense", 400, "Shop"),
+        ("expense", 600, "Shop"),
+        ("expense", 1_000, "Rent"),
+        ("expense", 100, "Snack"),
+    ] {
+        create_entry_at(
+            &app,
+            kind,
+            account_id,
+            amount,
+            name,
+            None,
+            "2026-11-15T12:00:00",
+        )
+        .await;
+    }
+
+    let (status, body) = items_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["month"], "2026-11");
+    assert_eq!(body["current"]["start_date"], "2026-11-01");
+    assert_eq!(body["current"]["end_date_exclusive"], "2026-12-01");
+    assert_eq!(body["current"]["income_minor"], 8_000);
+    assert_eq!(body["current"]["income_count"], 5);
+    assert_eq!(body["current"]["expense_minor"], 2_100);
+    assert_eq!(body["current"]["expense_count"], 4);
+    assert_eq!(body["current"]["net_minor"], 5_900);
+    let income = body["income_items"].as_array().unwrap();
+    assert_eq!(income.len(), 4);
+    assert_eq!(income[0]["name"], "Payee");
+    assert_eq!(income[0]["rank"], 1);
+    assert_eq!(income[0]["total_minor"], 3_500);
+    assert_eq!(income[0]["entry_count"], 2);
+    assert_eq!(income[1]["name"], "Tie Alpha");
+    assert_eq!(income[1]["rank"], 2);
+    assert_eq!(income[2]["name"], "Tie Beta");
+    assert_eq!(income[2]["rank"], 2);
+    assert_eq!(income[3]["name"], "payee");
+    assert_eq!(income[3]["rank"], 4);
+    assert_eq!(income[3]["total_minor"], 500);
+    let expense = body["expense_items"].as_array().unwrap();
+    assert_eq!(expense.len(), 3);
+    assert_eq!(expense[0]["name"], "Rent");
+    assert_eq!(expense[0]["rank"], 1);
+    assert_eq!(expense[1]["name"], "Shop");
+    assert_eq!(expense[1]["rank"], 1);
+    assert_eq!(expense[1]["total_minor"], 1_000);
+    assert_eq!(expense[1]["entry_count"], 2);
+    assert_eq!(expense[2]["name"], "Snack");
+    assert_eq!(expense[2]["rank"], 3);
+    assert_eq!(
+        income
+            .iter()
+            .map(|item| item["total_minor"].as_i64().unwrap())
+            .sum::<i64>(),
+        body["current"]["income_minor"].as_i64().unwrap()
+    );
+    assert_eq!(
+        expense
+            .iter()
+            .map(|item| item["total_minor"].as_i64().unwrap())
+            .sum::<i64>(),
+        body["current"]["expense_minor"].as_i64().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn items_summary_uses_report_period_visibility_invalid_dates_and_transfer_rules() {
+    let (app, pool, _directory) = setup().await;
+    let visible = create_account(&app, "Items visible", 0).await;
+    let picker_hidden = create_account(&app, "Items picker hidden", 0).await;
+    let report_hidden = create_account(&app, "Items report hidden", 0).await;
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{picker_hidden}"),
+        json!({ "hide_from_selection": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send_json(
+        &app,
+        "PUT",
+        &format!("/api/accounts/{report_hidden}"),
+        json!({ "hide_from_reports": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    create_entry_at(
+        &app,
+        "income",
+        visible,
+        100,
+        "Boundary",
+        None,
+        "2026-10-31T23:59:59Z",
+    )
+    .await;
+    create_entry_at(&app, "income", visible, 200, "Boundary", None, "2026-11-01").await;
+    create_entry_at(
+        &app,
+        "expense",
+        visible,
+        300,
+        "Boundary",
+        None,
+        "2026-11-30T23:59:59+05:30",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        visible,
+        999,
+        "Next month",
+        None,
+        "2026-12-01",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "expense",
+        picker_hidden,
+        50,
+        "Picker only",
+        None,
+        "2026-11-10",
+    )
+    .await;
+    create_entry_at(
+        &app,
+        "income",
+        report_hidden,
+        9_999,
+        "Hidden payee",
+        None,
+        "2026-11-10",
+    )
+    .await;
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        "/api/transfers",
+        json!({
+            "from_account_id": visible,
+            "to_account_id": picker_hidden,
+            "amount_minor": 777,
+            "name": "Excluded transfer",
+            "occurred_at": "2026-11-10T12:00:00"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for (account_id, kind, name, invalid) in [
+        (visible, "income", "Invalid visible income", "not-a-date"),
+        (
+            visible,
+            "expense",
+            "Invalid visible expense",
+            "2026-02-30T12:00:00Z",
+        ),
+        (report_hidden, "income", "Invalid hidden", "bad-date"),
+    ] {
+        sqlx::query(
+            "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+             VALUES (?, ?, 100, ?, 'legacy invalid', ?, '2026-11-01T00:00:00Z', NULL)",
+        )
+        .bind(kind)
+        .bind(account_id)
+        .bind(name)
+        .bind(invalid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (status, body) = items_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["current"]["income_minor"], 200);
+    assert_eq!(body["current"]["expense_minor"], 350);
+    assert_eq!(body["current"]["income_count"], 1);
+    assert_eq!(body["current"]["expense_count"], 2);
+    assert_eq!(body["invalid_date_entry_count"], 2);
+    assert_eq!(body["income_items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["income_items"][0]["name"], "Boundary");
+    assert_eq!(body["expense_items"].as_array().unwrap().len(), 2);
+    assert!(!body.to_string().contains("Hidden payee"));
+    assert!(!body.to_string().contains("Excluded transfer"));
+    assert!(!body.to_string().contains("Next month"));
+
+    let (status, prior) = items_report(&app, "2026-10").await;
+    assert_eq!(status, StatusCode::OK, "{prior}");
+    assert_eq!(prior["current"]["income_minor"], 100);
+    assert_eq!(prior["current"]["expense_minor"], 0);
+    assert_eq!(prior["income_items"][0]["name"], "Boundary");
+}
+
+#[tokio::test]
+async fn items_summary_empty_invalid_month_and_overflow_are_explicit() {
+    let (app, pool, _directory) = setup().await;
+    let account_id = create_account(&app, "Items empty and overflow", 0).await;
+    let (status, empty) = items_report(&app, "2030-05").await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    assert_eq!(empty["current"]["income_minor"], 0);
+    assert_eq!(empty["current"]["expense_minor"], 0);
+    assert_eq!(empty["income_items"], json!([]));
+    assert_eq!(empty["expense_items"], json!([]));
+    assert_eq!(empty["invalid_date_entry_count"], 0);
+
+    for month in ["2026-13", "2026-00", "0001-01", "not-a-month"] {
+        let (status, body) = items_report(&app, month).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{month}: {body}");
+    }
+
+    for _ in 0..2 {
+        sqlx::query(
+            "INSERT INTO entries (kind, account_id, amount_minor, name, note, occurred_at, created_at, transfer_id)
+             VALUES ('income', ?, ?, 'Overflow payee', '', '2026-11-10', '2026-11-10T00:00:00Z', NULL)",
+        )
+        .bind(account_id)
+        .bind(i64::MAX)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let (status, body) = items_report(&app, "2026-11").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"],
+        "report income item total is outside the supported integer range"
+    );
 }

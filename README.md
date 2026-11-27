@@ -158,6 +158,7 @@ All amounts are integer minor units.
 | `GET` | `/api/accounts/:id/history` | Paginated account-specific ledger with canonical ledger filters, relevant transfer side, filtered count, and full-day totals |
 | `GET` | `/api/ledger` | Paginated filtered combined ledger with full-day totals; supports `limit` and `offset` |
 | `GET` | `/api/ledger/export` | UTF-8 CSV of every transaction matching the same filter query parameters; ignores `limit` and `offset` |
+| `GET` | `/api/reports/items-summary?month=YYYY-MM` | Selected-month income/expense totals and ranked exact-name item groups with counts |
 | `POST` | `/api/transactions` | Create income/expense |
 | `GET/PUT/DELETE` | `/api/transactions/:id` | Detail/edit/permanent delete |
 | `POST` | `/api/transactions/:id/duplicate` | Duplicate transaction |
@@ -182,6 +183,8 @@ Ledger, account history, saved filters, and CSV export share these input rules:
 - Search is an ASCII case-insensitive literal substring of the name or note; non-ASCII characters match exactly. `%`, `_`, and `\` are ordinary characters, not wildcards or escapes; both operands use the same SQLite folding and search values are bound parameters for entries and transfers.
 - With an active date filter, legacy rows whose stored timestamp is invalid are excluded. Unfiltered history still returns them, and unfiltered CSV keeps its existing blank `Date` serialization.
 - Daily, category, and budget aggregates accumulate in wider integer paise and return HTTP 409 if a requested `i64` output cannot represent the total.
+
+Items Summary groups transaction names exactly and case-sensitively; notes are not searched. Income and expenses rank separately by descending total, with exact-name order breaking display ties. Equal totals share a competition rank (`1, 2, 2, 4`). It uses the same report-month, account visibility, invalid-date, transfer, and opening-balance rules as Net Earnings.
 
 Example transaction:
 

@@ -1248,6 +1248,160 @@ test("Net Earnings compares months and keeps report data tied to the active mont
   await expect(page.getByTestId("report-error")).toHaveCount(0);
 });
 
+test("Items Summary ranks exact names and keeps month-scoped states honest", async ({
+  page,
+  request,
+}) => {
+  const currentMonth = "2031-11";
+  const priorMonth = "2031-10";
+  const accountIds: number[] = [];
+  for (const name of ["F06 visible", "F06 picker hidden", "F06 report hidden"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 1000000 },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [visibleId, pickerId, reportHiddenId] = accountIds;
+  expect(
+    (
+      await request.put(`/api/accounts/${pickerId}`, {
+        data: { hide_from_selection: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  expect(
+    (
+      await request.put(`/api/accounts/${reportHiddenId}`, {
+        data: { hide_from_reports: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  const entries = [
+    [visibleId, "income", 100000, "F06 Payee", `${currentMonth}-05T12:00:00`],
+    [visibleId, "income", 200000, "F06 Payee", `${currentMonth}-06T12:00:00`],
+    [visibleId, "income", 150000, "F06 Tie Alpha", `${currentMonth}-07T12:00:00`],
+    [visibleId, "income", 150000, "F06 Tie Beta", `${currentMonth}-08T12:00:00`],
+    [visibleId, "income", 50000, "f06 payee", `${currentMonth}-09T12:00:00`],
+    [visibleId, "income", 25000, "F06 Boundary", `${currentMonth}-01T00:00:00`],
+    [visibleId, "income", 100000, "F06 Prior", `${priorMonth}-31T23:59:59Z`],
+    [visibleId, "expense", 50000, "F06 Shop", `${currentMonth}-10T12:00:00`],
+    [visibleId, "expense", 25000, "F06 Shop", `${currentMonth}-11T12:00:00`],
+    [visibleId, "expense", 100000, "F06 Rent", `${currentMonth}-12T12:00:00`],
+    [pickerId, "expense", 30000, "F06 Picker only", `${currentMonth}-13T12:00:00`],
+    [reportHiddenId, "income", 999000, "F06 Hidden payee", `${currentMonth}-14T12:00:00`],
+    [visibleId, "expense", 999, "F06 Next month", "2031-12-01T00:00:00"],
+  ] as const;
+  for (const [accountId, kind, amount, name, occurredAt] of entries) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind,
+        account_id: accountId,
+        amount_minor: amount,
+        name,
+        category_id: null,
+        occurred_at: occurredAt,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+  expect(
+    (
+      await request.post("/api/transfers", {
+        data: {
+          from_account_id: visibleId,
+          to_account_id: pickerId,
+          amount_minor: 50000,
+          name: "F06 Excluded transfer",
+          occurred_at: `${currentMonth}-15T12:00:00`,
+        },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  const releasePrior = deferred();
+  const priorStarted = deferred();
+  const priorFinished = deferred();
+  await page.route("**/api/reports/items-summary?**", async (route) => {
+    const month = new URL(route.request().url()).searchParams.get("month");
+    if (month === priorMonth) {
+      priorStarted.resolve();
+      const response = await route.fetch();
+      await releasePrior.promise;
+      await route.fulfill({ response });
+      priorFinished.resolve();
+      return;
+    }
+    if (month === "2032-02") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Selected month is unavailable" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByTestId("nav-items-summary").click();
+  await expect(page.getByRole("heading", { name: "Items Summary", exact: true })).toBeVisible();
+  await page.getByTestId("items-month").fill(currentMonth);
+  await expect(page.getByTestId("items-income-total")).toHaveText("₹6,750.00");
+  await expect(page.getByTestId("items-income-count")).toHaveText("6 entries");
+  await expect(page.getByTestId("items-expense-total")).toHaveText("₹2,050.00");
+  await expect(page.getByTestId("items-expense-count")).toHaveText("4 entries");
+  await expect(page.getByTestId("items-income-row-0")).toContainText("F06 Payee");
+  await expect(page.getByTestId("items-income-row-0-rank")).toHaveText("1");
+  await expect(page.getByTestId("items-income-row-0-count")).toHaveText("2");
+  await expect(page.getByTestId("items-income-row-0-amount")).toHaveText("₹3,000.00");
+  await expect(page.getByTestId("items-income-row-0")).toContainText("44%");
+  await expect(page.getByTestId("items-income-row-1")).toContainText("F06 Tie Alpha");
+  await expect(page.getByTestId("items-income-row-1-rank")).toHaveText("2");
+  await expect(page.getByTestId("items-income-row-2")).toContainText("F06 Tie Beta");
+  await expect(page.getByTestId("items-income-row-2-rank")).toHaveText("2");
+  await expect(page.getByTestId("items-income-row-3")).toContainText("f06 payee");
+  await expect(page.getByTestId("items-income-row-3-rank")).toHaveText("4");
+  await expect(page.getByTestId("items-income-row-3-amount")).toHaveText("₹500.00");
+  await expect(page.getByTestId("items-expense-row-0")).toContainText("F06 Rent");
+  await expect(page.getByTestId("items-expense-row-1")).toContainText("F06 Shop");
+  await expect(page.getByTestId("items-expense-row-1-count")).toHaveText("2");
+  await expect(page.getByTestId("items-expense-row-2")).toContainText("F06 Picker only");
+  await expect(page.getByText("F06 Hidden payee", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("F06 Excluded transfer", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("F06 Next month", { exact: true })).toHaveCount(0);
+
+  await page.getByTestId("items-month").fill(priorMonth);
+  await priorStarted.promise;
+  await expect(page.getByTestId("items-loading")).toBeVisible();
+  await expect(page.getByTestId("items-income-total")).toHaveText("Pending…");
+  await page.getByTestId("items-month").fill(currentMonth);
+  await expect(page.getByTestId("items-income-total")).toHaveText("₹6,750.00");
+  releasePrior.resolve();
+  await priorFinished.promise;
+  await expect(page.getByTestId("items-income-total")).toHaveText("₹6,750.00");
+  await expect(page.getByTestId("items-expense-total")).toHaveText("₹2,050.00");
+
+  await page.getByTestId("items-month").fill(priorMonth);
+  await expect(page.getByTestId("items-income-total")).toHaveText("₹1,000.00");
+  await expect(page.getByTestId("items-income-row-0")).toContainText("F06 Prior");
+  await expect(page.getByTestId("items-expense-total")).toHaveText("₹0.00");
+
+  await page.getByTestId("items-month").fill("2032-01");
+  await expect(page.getByTestId("items-empty")).toContainText("No income or expenses");
+  await expect(page.getByTestId("items-income-total")).toHaveText("₹0.00");
+  await expect(page.getByTestId("items-expense-total")).toHaveText("₹0.00");
+  await expect(page.getByTestId("items-loading")).toHaveCount(0);
+  await expect(page.getByTestId("items-error")).toHaveCount(0);
+
+  await page.getByTestId("items-month").fill("2032-02");
+  await expect(page.getByTestId("items-error")).toContainText("Selected month is unavailable");
+  await expect(page.getByTestId("items-income-total")).toHaveText("Unavailable");
+  await expect(page.getByTestId("items-expense-total")).toHaveText("Unavailable");
+  await expect(page.getByTestId("items-empty")).toHaveCount(0);
+});
+
 test("account types round-trip assets and liabilities without changing balances or history", async ({
   page,
   request,

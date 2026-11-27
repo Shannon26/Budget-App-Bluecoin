@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 pub(super) struct ReportEntry {
     pub(super) account_id: i64,
     pub(super) category_id: Option<i64>,
+    pub(super) name: String,
     pub(super) kind: String,
     pub(super) amount_minor: i64,
     pub(super) occurred_at: String,
@@ -80,6 +81,39 @@ impl PeriodAmount {
 fn checked_i64(value: i128, label: &str) -> AppResult<i64> {
     i64::try_from(value)
         .map_err(|_| AppError::Conflict(format!("{label} is outside the supported integer range")))
+}
+
+#[derive(Debug, Default)]
+struct ItemAmount {
+    total_minor: i128,
+    entry_count: i128,
+}
+
+fn ranked_items(amounts: HashMap<String, ItemAmount>, kind: &str) -> AppResult<Vec<ReportItem>> {
+    let mut rows = amounts
+        .into_iter()
+        .map(|(name, amount)| (name, amount.total_minor, amount.entry_count))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let mut previous_total = None;
+    let mut previous_rank = 0;
+    let mut items = Vec::with_capacity(rows.len());
+    for (index, (name, total_minor, entry_count)) in rows.into_iter().enumerate() {
+        let rank = if previous_total == Some(total_minor) {
+            previous_rank
+        } else {
+            index + 1
+        };
+        previous_total = Some(total_minor);
+        previous_rank = rank;
+        items.push(ReportItem {
+            rank,
+            name,
+            total_minor: checked_i64(total_minor, &format!("report {kind} item total"))?,
+            entry_count: checked_i64(entry_count, &format!("report {kind} item count"))?,
+        });
+    }
+    Ok(items)
 }
 
 fn category_values(
@@ -224,7 +258,7 @@ impl Store {
         .fetch_all(&mut *transaction)
         .await?;
         let entries = sqlx::query_as::<_, ReportEntry>(
-            "SELECT account_id, category_id, kind, amount_minor, occurred_at
+            "SELECT account_id, category_id, name, kind, amount_minor, occurred_at
              FROM entries
              WHERE kind IN ('income', 'expense')",
         )
@@ -358,6 +392,69 @@ impl Store {
                 "invalid-date entry count",
             )?,
             categories: report_categories,
+        })
+    }
+
+    pub async fn items_summary_report(&self, month: &str) -> AppResult<ItemsSummaryReport> {
+        let ReportMonths {
+            month,
+            current_start,
+            current_end,
+            ..
+        } = Self::report_months(month)?;
+        let ReportSnapshot {
+            hidden_report_accounts,
+            entries,
+            ..
+        } = self.report_snapshot().await?;
+        let mut income_items = HashMap::<String, ItemAmount>::new();
+        let mut expense_items = HashMap::<String, ItemAmount>::new();
+        let mut current = CategoryAmount::default();
+        let mut invalid_date_entry_count = 0_i128;
+        for entry in entries {
+            if hidden_report_accounts.contains(&entry.account_id) {
+                continue;
+            }
+            let Some(date) = date_only(&entry.occurred_at) else {
+                invalid_date_entry_count += 1;
+                continue;
+            };
+            if date.as_str() < current_start.as_str() || date.as_str() >= current_end.as_str() {
+                continue;
+            }
+            current.add(&entry.kind, entry.amount_minor);
+            let amounts = match entry.kind.as_str() {
+                "income" => &mut income_items,
+                "expense" => &mut expense_items,
+                _ => continue,
+            };
+            let amount = amounts.entry(entry.name).or_default();
+            amount.total_minor += i128::from(entry.amount_minor);
+            amount.entry_count += 1;
+        }
+
+        let income_items = ranked_items(income_items, "income")?;
+        let expense_items = ranked_items(expense_items, "expense")?;
+        Ok(ItemsSummaryReport {
+            month: month.to_string(),
+            current: ReportPeriod {
+                start_date: current_start,
+                end_date_exclusive: current_end,
+                income_minor: checked_i64(current.income_minor, "report income")?,
+                expense_minor: checked_i64(current.expense_minor, "report expense")?,
+                net_minor: checked_i64(
+                    current.income_minor - current.expense_minor,
+                    "report net earnings",
+                )?,
+                income_count: checked_i64(current.income_count, "report income count")?,
+                expense_count: checked_i64(current.expense_count, "report expense count")?,
+            },
+            income_items,
+            expense_items,
+            invalid_date_entry_count: checked_i64(
+                invalid_date_entry_count,
+                "invalid-date entry count",
+            )?,
         })
     }
 }

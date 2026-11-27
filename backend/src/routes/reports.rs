@@ -11,3 +11,10 @@ pub(crate) async fn net_earnings(
 ) -> AppResult<Json<NetEarningsReport>> {
     Ok(Json(state.store.net_earnings_report(&query.month).await?))
 }
+
+pub(crate) async fn items_summary(
+    State(state): State<AppState>,
+    Query(query): Query<ItemsSummaryReportQuery>,
+) -> AppResult<Json<ItemsSummaryReport>> {
+    Ok(Json(state.store.items_summary_report(&query.month).await?))
+}
