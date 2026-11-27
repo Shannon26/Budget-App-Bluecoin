@@ -1,32 +1,62 @@
 use super::Store;
+use crate::date::date_only;
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use sqlx::{QueryBuilder, Sqlite};
 use std::collections::BTreeMap;
 
 impl Store {
-    fn apply_entry_filters(builder: &mut QueryBuilder<Sqlite>, filter: &FilterDefinition) {
+    fn apply_search_filter(
+        builder: &mut QueryBuilder<Sqlite>,
+        name_column: &str,
+        note_column: &str,
+        filter: &FilterDefinition,
+    ) {
         if let Some(search) = filter
             .search
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
         {
-            let pattern = format!("%{}%", search.to_lowercase());
-            builder.push(" AND (lower(e.name) LIKE ");
-            builder.push_bind(pattern.clone());
-            builder.push(" OR lower(e.note) LIKE ");
-            builder.push_bind(pattern);
-            builder.push(")");
+            // Fold both operands with SQLite so non-ASCII text keeps exact matching
+            // while ASCII case-insensitivity and literal wildcard characters remain.
+            let search = search.to_string();
+            builder.push(" AND (instr(lower(");
+            builder.push(name_column);
+            builder.push("), lower(");
+            builder.push_bind(search.clone());
+            builder.push(")) > 0 OR instr(lower(");
+            builder.push(note_column);
+            builder.push("), lower(");
+            builder.push_bind(search);
+            builder.push(")) > 0)");
         }
-        if let Some(from) = &filter.date_from {
-            builder.push(" AND substr(e.occurred_at, 1, 10) >= ");
-            builder.push_bind(from.clone());
+    }
+
+    fn has_date_filter(filter: &FilterDefinition) -> bool {
+        filter.date_from.is_some() || filter.date_to.is_some()
+    }
+
+    fn retain_date_matches(entries: &mut Vec<LedgerEntry>, filter: &FilterDefinition) {
+        if !Self::has_date_filter(filter) {
+            return;
         }
-        if let Some(to) = &filter.date_to {
-            builder.push(" AND substr(e.occurred_at, 1, 10) <= ");
-            builder.push_bind(to.clone());
-        }
+        entries.retain(|entry| {
+            date_only(&entry.occurred_at).is_some_and(|date| {
+                filter
+                    .date_from
+                    .as_ref()
+                    .map_or(true, |from| date.as_str() >= from.as_str())
+                    && filter
+                        .date_to
+                        .as_ref()
+                        .map_or(true, |to| date.as_str() <= to.as_str())
+            })
+        });
+    }
+
+    fn apply_entry_filters(builder: &mut QueryBuilder<Sqlite>, filter: &FilterDefinition) {
+        Self::apply_search_filter(builder, "e.name", "e.note", filter);
         if let Some(account_id) = filter.account_id {
             builder.push(" AND e.account_id = ");
             builder.push_bind(account_id);
@@ -55,27 +85,7 @@ impl Store {
         if filter.category_id.is_some() || filter.uncategorized.unwrap_or(false) {
             builder.push(" AND 0 = 1");
         }
-        if let Some(search) = filter
-            .search
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            let pattern = format!("%{}%", search.to_lowercase());
-            builder.push(" AND (lower(t.name) LIKE ");
-            builder.push_bind(pattern.clone());
-            builder.push(" OR lower(t.note) LIKE ");
-            builder.push_bind(pattern);
-            builder.push(")");
-        }
-        if let Some(from) = &filter.date_from {
-            builder.push(" AND substr(t.occurred_at, 1, 10) >= ");
-            builder.push_bind(from.clone());
-        }
-        if let Some(to) = &filter.date_to {
-            builder.push(" AND substr(t.occurred_at, 1, 10) <= ");
-            builder.push_bind(to.clone());
-        }
+        Self::apply_search_filter(builder, "t.name", "t.note", filter);
         if let Some(account_id) = filter.account_id {
             builder.push(" AND (t.from_account_id = ");
             builder.push_bind(account_id);
@@ -111,27 +121,39 @@ impl Store {
         mut entries: Vec<LedgerEntry>,
         limit: Option<usize>,
         offset: Option<usize>,
-    ) -> LedgerPage {
+        normalize_dates: bool,
+    ) -> AppResult<LedgerPage> {
         Self::order_entries(&mut entries);
         let total_count = entries.len();
-        let mut totals = BTreeMap::<String, DailyTotal>::new();
+        let mut totals = BTreeMap::<String, (i128, i128, i128)>::new();
         for entry in &entries {
-            let date: String = entry.occurred_at.chars().take(10).collect();
-            let total = totals.entry(date).or_insert(DailyTotal {
-                date: entry.occurred_at.chars().take(10).collect(),
-                income_minor: 0,
-                expense_minor: 0,
-                transfer_minor: 0,
-            });
+            let legacy_date: String = entry.occurred_at.chars().take(10).collect();
+            let date = if normalize_dates {
+                date_only(&entry.occurred_at).unwrap_or(legacy_date)
+            } else {
+                legacy_date
+            };
+            let total = totals.entry(date).or_default();
             match entry.kind.as_str() {
-                "income" => total.income_minor += entry.amount_minor,
-                "expense" => total.expense_minor += entry.amount_minor,
+                "income" => total.0 += i128::from(entry.amount_minor),
+                "expense" => total.1 += i128::from(entry.amount_minor),
                 "transfer" | "transfer_in" | "transfer_out" => {
-                    total.transfer_minor += entry.amount_minor
+                    total.2 += i128::from(entry.amount_minor)
                 }
                 _ => {}
             }
         }
+        let daily_totals = totals
+            .into_iter()
+            .map(|(date, (income, expense, transfer))| {
+                Ok(DailyTotal {
+                    date,
+                    income_minor: Store::checked_i64(income, "daily ledger income total")?,
+                    expense_minor: Store::checked_i64(expense, "daily ledger expense total")?,
+                    transfer_minor: Store::checked_i64(transfer, "daily ledger transfer total")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
         let limit = limit.unwrap_or(200).clamp(1, 200);
         let offset = offset.unwrap_or(0);
         let end = offset.saturating_add(limit).min(total_count);
@@ -141,12 +163,12 @@ impl Store {
             Vec::new()
         };
         let next_offset = (end < total_count).then_some(end);
-        LedgerPage {
+        Ok(LedgerPage {
             entries: paged,
-            daily_totals: totals.into_values().collect(),
+            daily_totals,
             total_count,
             next_offset,
-        }
+        })
     }
 
     pub async fn ledger_entries(&self, filter: FilterDefinition) -> AppResult<Vec<LedgerEntry>> {
@@ -188,6 +210,7 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         entries.extend(transfers);
+        Self::retain_date_matches(&mut entries, &filter);
         Self::order_entries(&mut entries);
         Ok(entries)
     }
@@ -198,11 +221,13 @@ impl Store {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> AppResult<LedgerPage> {
-        Ok(Self::build_page(
+        let normalize_dates = Self::has_date_filter(&filter);
+        Self::build_page(
             self.ledger_entries(filter).await?,
             limit,
             offset,
-        ))
+            normalize_dates,
+        )
     }
 
     pub async fn account_history(
@@ -260,7 +285,8 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         entries.extend(transfers);
-        Ok(Self::build_page(entries, limit, offset))
+        Self::retain_date_matches(&mut entries, &filter);
+        Self::build_page(entries, limit, offset, Self::has_date_filter(&filter))
     }
 
     pub async fn transaction_detail(&self, id: i64) -> AppResult<LedgerEntry> {

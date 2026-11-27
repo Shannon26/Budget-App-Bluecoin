@@ -176,6 +176,13 @@ All amounts are integer minor units.
 
 Account history accepts the same filter query parameters as `/api/ledger`. The path account is always pinned: `account_id` may be omitted or match the path ID; a conflicting value returns HTTP 400. Transfers still show only the side affecting that account.
 
+Ledger, account history, saved filters, and CSV export share these input rules:
+
+- `date_from` and `date_to`, when supplied, must be strict `YYYY-MM-DD` calendar dates. Empty, malformed, impossible, or inverted ranges return HTTP 400. Boundaries include the whole local calendar day for date-only, local date-time, and RFC3339 timestamps.
+- Search is an ASCII case-insensitive literal substring of the name or note; non-ASCII characters match exactly. `%`, `_`, and `\` are ordinary characters, not wildcards or escapes; both operands use the same SQLite folding and search values are bound parameters for entries and transfers.
+- With an active date filter, legacy rows whose stored timestamp is invalid are excluded. Unfiltered history still returns them, and unfiltered CSV keeps its existing blank `Date` serialization.
+- Daily, category, and budget aggregates accumulate in wider integer paise and return HTTP 409 if a requested `i64` output cannot represent the total.
+
 Example transaction:
 
 ```json
@@ -210,6 +217,7 @@ Budget rules:
 - Archived categories remain visible with their historical limits and spending. Existing archived limits can be edited or removed, but a new limit cannot be added to an archived category.
 - Month boundaries use validated calendar dates and a half-open range, so the last instant of one month and the first of the next are not double-counted. Transaction edits, deletions, and category hierarchy changes are reflected when budgets are loaded.
 - Progress is capped visually at 100%, while the percentage and **over** amount continue to show the true excess.
+- Budget saves and removals commit only with a successful checked snapshot. If an aggregate cannot fit the API integer range, the write rolls back and returns HTTP 409.
 
 For example, when **Dining Out** is a child of **Food & Drink**, a ₹5,000 Food & Drink limit and a ₹1,500 Dining Out limit with ₹1,000 groceries and ₹1,800 dining show:
 

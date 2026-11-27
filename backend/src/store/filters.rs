@@ -1,10 +1,36 @@
 use super::Store;
+use crate::date::is_valid_calendar_date;
 use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::Utc;
 
 impl Store {
     pub(super) fn validate_filter(filter: &FilterDefinition) -> AppResult<()> {
+        if filter
+            .date_from
+            .as_ref()
+            .is_some_and(|date| !is_valid_calendar_date(date))
+        {
+            return Err(AppError::BadRequest(
+                "date_from must be a valid calendar date in YYYY-MM-DD format".to_string(),
+            ));
+        }
+        if filter
+            .date_to
+            .as_ref()
+            .is_some_and(|date| !is_valid_calendar_date(date))
+        {
+            return Err(AppError::BadRequest(
+                "date_to must be a valid calendar date in YYYY-MM-DD format".to_string(),
+            ));
+        }
+        if let (Some(from), Some(to)) = (&filter.date_from, &filter.date_to) {
+            if from > to {
+                return Err(AppError::BadRequest(
+                    "date_from cannot be later than date_to".to_string(),
+                ));
+            }
+        }
         if filter.amount_min_minor.is_some_and(|amount| amount < 0)
             || filter.amount_max_minor.is_some_and(|amount| amount < 0)
         {

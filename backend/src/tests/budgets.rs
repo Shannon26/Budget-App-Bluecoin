@@ -673,3 +673,73 @@ async fn monthly_category_budgets_roll_up_children_without_double_counting_overa
     assert_eq!(budget_row(&body, dining)["limit_minor"], Value::Null);
     assert_eq!(budget_row(&body, dining)["spent_minor"], 180_000);
 }
+
+#[tokio::test]
+async fn overflowing_budget_snapshots_roll_back_save_and_remove() {
+    let (app, pool, _directory) = setup().await;
+    let checking = create_account(&app, "Atomic overflow checking", 0).await;
+    let shopping = category_id(&app, "expense", "Shopping").await;
+    let (status, body) = set_budget(&app, shopping, "2026-11", 100_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let original = sqlx::query_as::<_, (i64, String)>(
+        "SELECT amount_minor, updated_at FROM category_budgets
+         WHERE category_id = ? AND month = '2026-11'",
+    )
+    .bind(shopping)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for (name, amount) in [
+        ("Atomic overflow maximum", i64::MAX),
+        ("Atomic overflow extra", 1),
+    ] {
+        create_entry_at(
+            &app,
+            "expense",
+            checking,
+            amount,
+            name,
+            None,
+            "2026-11-20T12:00:00",
+        )
+        .await;
+    }
+
+    let (status, body) = set_budget(&app, shopping, "2026-11", 200_000).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"],
+        "monthly expense total is outside the supported integer range"
+    );
+    let after_save = sqlx::query_as::<_, (i64, String)>(
+        "SELECT amount_minor, updated_at FROM category_budgets
+         WHERE category_id = ? AND month = '2026-11'",
+    )
+    .bind(shopping)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_save, original);
+
+    let (status, body) = send_json(
+        &app,
+        "DELETE",
+        &format!("/api/category-budgets/{shopping}?month=2026-11"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"],
+        "monthly expense total is outside the supported integer range"
+    );
+    let after_remove = sqlx::query_as::<_, (i64, String)>(
+        "SELECT amount_minor, updated_at FROM category_budgets
+         WHERE category_id = ? AND month = '2026-11'",
+    )
+    .bind(shopping)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_remove, original);
+}

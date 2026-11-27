@@ -3,9 +3,18 @@ use crate::error::{AppError, AppResult};
 use crate::models::*;
 use chrono::Utc;
 use sqlx::SqliteConnection;
+use std::collections::BTreeMap;
 
 impl Store {
     pub async fn categories(&self) -> AppResult<Vec<Category>> {
+        let mut connection = self.pool.acquire().await?;
+        self.categories_on(&mut connection).await
+    }
+
+    pub(super) async fn categories_on(
+        &self,
+        connection: &mut SqliteConnection,
+    ) -> AppResult<Vec<Category>> {
         sqlx::query_as::<_, Category>(
             "SELECT c.id, c.name, c.kind, c.parent_id, p.name AS parent_name,
                     c.color, c.icon, c.sort_order, c.archived_at, c.created_at
@@ -13,25 +22,40 @@ impl Store {
              LEFT JOIN categories p ON p.id = c.parent_id
              ORDER BY c.kind, c.sort_order, c.name",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(AppError::from)
     }
 
     pub async fn category_totals(&self) -> AppResult<Vec<CategoryTotal>> {
-        sqlx::query_as::<_, CategoryTotal>(
-            "SELECT c.id AS category_id, e.kind,
-                    COALESCE(c.name, 'Uncategorized') AS name,
-                    SUM(e.amount_minor) AS total_minor, COUNT(*) AS entry_count
+        let rows = sqlx::query_as::<_, (Option<i64>, String, String, i64)>(
+            "SELECT e.category_id, e.kind, COALESCE(c.name, 'Uncategorized') AS name,
+                    e.amount_minor
              FROM entries e
              LEFT JOIN categories c ON c.id = e.category_id
              WHERE e.kind IN ('income', 'expense')
-             GROUP BY c.id, e.kind
-             ORDER BY e.kind, name",
+             ORDER BY e.kind, name, e.id",
         )
         .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::from)
+        .await?;
+        let mut totals = BTreeMap::<(String, String, Option<i64>), (i128, i64)>::new();
+        for (category_id, kind, name, amount_minor) in rows {
+            let total = totals.entry((kind, name, category_id)).or_default();
+            total.0 += i128::from(amount_minor);
+            total.1 += 1;
+        }
+        totals
+            .into_iter()
+            .map(|((kind, name, category_id), (total_minor, entry_count))| {
+                Ok(CategoryTotal {
+                    category_id,
+                    kind,
+                    name,
+                    total_minor: Store::checked_i64(total_minor, "category total")?,
+                    entry_count,
+                })
+            })
+            .collect()
     }
 
     async fn validate_category_parent(

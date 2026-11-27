@@ -16,6 +16,12 @@ impl Store {
         Self { pool }
     }
 
+    pub(super) fn checked_i64(value: i128, label: &str) -> AppResult<i64> {
+        i64::try_from(value).map_err(|_| {
+            AppError::Conflict(format!("{label} is outside the supported integer range"))
+        })
+    }
+
     pub(super) fn validate_amount(amount_minor: i64) -> AppResult<()> {
         if amount_minor <= 0 {
             return Err(AppError::BadRequest(
