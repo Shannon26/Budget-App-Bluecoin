@@ -1030,6 +1030,224 @@ test("budget responses stay tied to their selected month and invalid dates are f
   await expect(page.getByTestId("budget-total-spent")).toContainText("123.45");
 });
 
+test("Net Earnings compares months and keeps report data tied to the active month", async ({
+  page,
+  request,
+}) => {
+  const currentMonth = "2029-11";
+  const priorMonth = "2029-10";
+  const accountIds: number[] = [];
+  for (const name of ["F05 visible", "F05 picker hidden", "F05 report hidden"]) {
+    const response = await request.post("/api/accounts", {
+      data: { name, currency: "INR", opening_balance_minor: 1000000 },
+    });
+    expect(response.ok()).toBeTruthy();
+    accountIds.push((await response.json()).id as number);
+  }
+  const [visibleId, pickerId, reportHiddenId] = accountIds;
+  expect(
+    (
+      await request.put(`/api/accounts/${pickerId}`, {
+        data: { hide_from_selection: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  expect(
+    (
+      await request.put(`/api/accounts/${reportHiddenId}`, {
+        data: { hide_from_reports: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  const categoryIds: number[] = [];
+  for (const [name, kind, parentId] of [
+    ["F05 Expense Parent", "expense", null],
+    ["F05 Expense Child", "expense", null],
+    ["F05 Expense Archived", "expense", null],
+    ["F05 Income Parent", "income", null],
+    ["F05 Income Child", "income", null],
+  ] as const) {
+    const response = await request.post("/api/categories", {
+      data: {
+        name,
+        kind,
+        parent_id: parentId,
+        color: "#426b8a",
+        icon: "•",
+        sort_order: 100,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    categoryIds.push((await response.json()).id as number);
+  }
+  const [expenseParent, expenseChild, archivedId, incomeParent, incomeChild] = categoryIds;
+  expect(
+    (
+      await request.put(`/api/categories/${expenseChild}`, {
+        data: {
+          name: "F05 Expense Child",
+          kind: "expense",
+          parent_id: expenseParent,
+          color: "#426b8a",
+          icon: "•",
+          sort_order: 100,
+        },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  expect(
+    (
+      await request.put(`/api/categories/${incomeChild}`, {
+        data: {
+          name: "F05 Income Child",
+          kind: "income",
+          parent_id: incomeParent,
+          color: "#426b8a",
+          icon: "•",
+          sort_order: 100,
+        },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  const entries = [
+    [visibleId, "income", 100000, "F05 current income parent", incomeParent, `${currentMonth}-05T12:00:00`],
+    [visibleId, "income", 200000, "F05 current income child", incomeChild, `${currentMonth}-06T12:00:00`],
+    [visibleId, "expense", 50000, "F05 current expense parent", expenseParent, `${currentMonth}-07T12:00:00`],
+    [visibleId, "expense", 150000, "F05 current expense child", expenseChild, `${currentMonth}-08T12:00:00`],
+    [visibleId, "expense", 25000, "F05 current archived expense", archivedId, `${currentMonth}-09T12:00:00`],
+    [visibleId, "expense", 30000, "F05 current uncategorized expense", null, `${currentMonth}-10T12:00:00`],
+    [pickerId, "expense", 40000, "F05 picker-only expense", null, `${currentMonth}-11T12:00:00`],
+    [reportHiddenId, "income", 999000, "F05 hidden report income", null, `${currentMonth}-12T12:00:00`],
+    [visibleId, "income", 100000, "F05 prior income", incomeChild, `${priorMonth}-15T12:00:00`],
+    [visibleId, "expense", 40000, "F05 prior expense", expenseChild, `${priorMonth}-16T12:00:00`],
+    [visibleId, "expense", 10000, "F05 prior uncategorized", null, `${priorMonth}-17T12:00:00`],
+  ] as const;
+  for (const [accountId, kind, amount, name, categoryId, occurredAt] of entries) {
+    const response = await request.post("/api/transactions", {
+      data: {
+        kind,
+        account_id: accountId,
+        amount_minor: amount,
+        name,
+        category_id: categoryId,
+        occurred_at: occurredAt,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+  expect(
+    (
+      await request.post("/api/transfers", {
+        data: {
+          from_account_id: visibleId,
+          to_account_id: pickerId,
+          amount_minor: 50000,
+          name: "F05 excluded transfer",
+        },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  expect((await request.delete(`/api/categories/${archivedId}`)).ok()).toBeTruthy();
+
+  const releasePrior = deferred();
+  const priorStarted = deferred();
+  const priorFinished = deferred();
+  await page.route("**/api/reports/net-earnings?**", async (route) => {
+    const month = new URL(route.request().url()).searchParams.get("month");
+    if (month === currentMonth) {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.invalid_date_entry_count = 2;
+      await route.fulfill({
+        status: response.status(),
+        headers: response.headers(),
+        json: body,
+      });
+      return;
+    }
+    if (month === priorMonth) {
+      priorStarted.resolve();
+      const response = await route.fetch();
+      await releasePrior.promise;
+      await route.fulfill({ response });
+      priorFinished.resolve();
+      return;
+    }
+    if (month === "2030-02") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Selected month is unavailable" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByTestId("nav-net-earnings").click();
+  const localMonth = await page.evaluate(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  await expect(page.getByTestId("report-month")).toHaveValue(localMonth);
+  await page.getByTestId("report-month").fill(currentMonth);
+  await expect(page.getByTestId("report-income-prior")).toHaveText("₹1,000.00");
+  await expect(page.getByTestId("report-income-current")).toHaveText("₹3,000.00");
+  await expect(page.getByTestId("report-expense-prior")).toHaveText("₹500.00");
+  await expect(page.getByTestId("report-expense-current")).toHaveText("₹2,950.00");
+  await expect(page.getByTestId("report-net-prior")).toHaveText("₹500.00");
+  await expect(page.getByTestId("report-net-current")).toHaveText("₹50.00");
+  await expect(page.getByTestId("report-invalid-dates")).toContainText(
+    "2 posted entries with invalid legacy dates",
+  );
+  await expect(page.getByTestId(`report-income-current-category-${incomeParent}-amount`)).toHaveText(
+    "₹3,000.00",
+  );
+  const expenseParentRow = page.getByTestId(
+    `report-expense-current-category-${expenseParent}`,
+  );
+  await expect(expenseParentRow).toContainText("Direct ₹500.00");
+  await expect(expenseParentRow).toContainText("68%");
+  await expect(
+    page.getByTestId(`report-expense-current-category-${expenseChild}-amount`),
+  ).toHaveText("₹1,500.00");
+  await expect(
+    page.getByTestId(`report-expense-current-category-${archivedId}`),
+  ).toContainText("Archived");
+  await expect(
+    page.getByTestId("report-expense-current-category-uncategorized-amount"),
+  ).toHaveText("₹700.00");
+
+  await page.getByTestId("report-month").fill(priorMonth);
+  await priorStarted.promise;
+  await expect(page.getByTestId("report-loading")).toBeVisible();
+  await expect(page.getByTestId("report-income-current")).toHaveText("Pending…");
+  await page.getByTestId("report-month").fill(currentMonth);
+  await expect(page.getByTestId("report-income-current")).toHaveText("₹3,000.00");
+  releasePrior.resolve();
+  await priorFinished.promise;
+  await expect(page.getByTestId("report-income-current")).toHaveText("₹3,000.00");
+  await expect(page.getByTestId("report-expense-current")).toHaveText("₹2,950.00");
+
+  await page.getByTestId("report-month").fill("2030-02");
+  await expect(page.getByTestId("report-error")).toContainText("Selected month is unavailable");
+  await expect(page.getByTestId("report-income-current")).toHaveText("Unavailable");
+  await page.getByTestId("report-month").fill("9999-12");
+  await expect(page.getByTestId("report-error")).toContainText(
+    "representable calendar boundaries",
+  );
+
+  await page.getByTestId("report-month").fill("2030-01");
+  await expect(page.getByTestId("report-income-current")).toHaveText("₹0.00");
+  await expect(page.getByTestId("report-expense-current")).toHaveText("₹0.00");
+  await expect(page.getByTestId("report-net-current")).toHaveText("₹0.00");
+  await expect(page.getByTestId("report-loading")).toHaveCount(0);
+  await expect(page.getByTestId("report-error")).toHaveCount(0);
+});
+
 test("account types round-trip assets and liabilities without changing balances or history", async ({
   page,
   request,

@@ -5,6 +5,7 @@ import Budgets from "./features/budgets/Budgets";
 import CategoryManager from "./features/categories/CategoryManager";
 import Ledger from "./features/ledger/Ledger";
 import Overview from "./features/overview/Overview";
+import NetEarnings from "./features/reports/NetEarnings";
 import { useOverviewForms } from "./features/overview/useOverviewForms";
 
 const emptyState: BudgetState = {
@@ -17,7 +18,7 @@ const emptyState: BudgetState = {
   entries: [],
 };
 
-type Tab = "overview" | "ledger" | "categories" | "budgets";
+type Tab = "overview" | "ledger" | "categories" | "budgets" | "reports";
 
 export default function App() {
   const [data, setData] = useState<BudgetState>(emptyState);
@@ -107,6 +108,14 @@ export default function App() {
         >
           Budgets
         </button>
+        <button
+          data-testid="nav-net-earnings"
+          className={activeTab === "reports" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveTab("reports")}
+        >
+          Net Earnings
+        </button>
       </nav>
 
       <main>
@@ -159,10 +168,16 @@ export default function App() {
             <Budgets onMessage={onMessage} />
           </section>
         )}
+
+        {activeTab === "reports" && (
+          <section className="panel ledger-panel">
+            <NetEarnings />
+          </section>
+        )}
       </main>
 
       <footer>
-        <span>Paisa · transactions, categories, and monthly budgets</span>
+        <span>Paisa · transactions, categories, budgets, and reports</span>
         <span>Amounts are stored as integer minor units (paise).</span>
       </footer>
     </div>

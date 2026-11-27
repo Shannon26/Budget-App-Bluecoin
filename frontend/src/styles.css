@@ -3,4 +3,5 @@
 @import "./features/ledger/ledger.css";
 @import "./features/budgets/budgets.css";
 @import "./features/categories/categories.css";
+@import "./features/reports/reports.css";
 @import "./styles/responsive.css";
