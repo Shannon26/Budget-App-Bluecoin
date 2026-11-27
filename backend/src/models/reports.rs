@@ -28,6 +28,12 @@ pub struct BalanceSheetReportQuery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct CashFlowNetWorthQuery {
+    pub month: String,
+    pub months: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreditCardReportQuery {
     pub account_id: i64,
     pub anchor_date: String,
@@ -178,6 +184,28 @@ pub struct BalanceSheetReport {
     pub groups: Vec<BalanceSheetGroup>,
     pub prior_net_worth_minor: i64,
     pub current_net_worth_minor: i64,
+    pub invalid_date_entry_count: i64,
+    pub legacy_opening_account_count: i64,
+}
+
+/// One month using the same half-open cash-flow period and month-end net-worth cutoff.
+#[derive(Debug, Clone, Serialize)]
+pub struct CashFlowNetWorthPoint {
+    pub month: String,
+    pub cutoff_date: String,
+    pub cash_flow: ReportPeriod,
+    pub net_worth_minor: i64,
+}
+
+/// Current-data recomputation across identical requested monthly cutoffs.
+#[derive(Debug, Clone, Serialize)]
+pub struct CashFlowNetWorthReport {
+    pub month: String,
+    pub prior_month: String,
+    pub months: usize,
+    pub current: ReportPeriod,
+    pub prior: ReportPeriod,
+    pub points: Vec<CashFlowNetWorthPoint>,
     pub invalid_date_entry_count: i64,
     pub legacy_opening_account_count: i64,
 }

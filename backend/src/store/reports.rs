@@ -47,6 +47,13 @@ pub(super) struct ReportMonths {
     pub(super) prior_end: String,
 }
 
+#[derive(Debug)]
+struct TrendMonth {
+    month: String,
+    start_date: String,
+    end_date_exclusive: String,
+}
+
 const REPORT_LABEL_BATCH_SIZE: usize = 500;
 
 #[derive(Debug, Default, Clone, Copy)]
