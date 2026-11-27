@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, FromRow)]
 pub(super) struct ReportEntry {
+    pub(super) id: i64,
     pub(super) account_id: i64,
     pub(super) category_id: Option<i64>,
     pub(super) name: String,
@@ -20,6 +21,8 @@ pub(super) struct ReportEntry {
 pub(super) struct ReportSnapshot {
     pub(super) hidden_report_accounts: HashSet<i64>,
     pub(super) categories: Vec<Category>,
+    pub(super) labels: Vec<Label>,
+    pub(super) entry_label_ids: HashMap<i64, Vec<i64>>,
     pub(super) entries: Vec<ReportEntry>,
 }
 
@@ -120,6 +123,22 @@ fn rounded_average(total_minor: i128, days: i128, label: &str) -> AppResult<i64>
 struct ItemAmount {
     total_minor: i128,
     entry_count: i128,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct LabelAmount {
+    income_minor: i128,
+    expense_minor: i128,
+}
+
+impl LabelAmount {
+    fn add(&mut self, kind: &str, amount_minor: i128) {
+        match kind {
+            "income" => self.income_minor += amount_minor,
+            "expense" => self.expense_minor += amount_minor,
+            _ => {}
+        }
+    }
 }
 
 fn ranked_items(amounts: HashMap<String, ItemAmount>, kind: &str) -> AppResult<Vec<ReportItem>> {
@@ -271,8 +290,8 @@ impl Store {
     }
 
     pub(super) async fn report_snapshot(&self) -> AppResult<ReportSnapshot> {
-        // A deferred read transaction gives accounts, categories, and entries one
-        // consistent SQLite snapshot without taking a write lock.
+        // A deferred read transaction gives accounts, categories, labels, links,
+        // and entries one consistent SQLite snapshot without taking a write lock.
         let mut transaction = self.pool.begin().await?;
         let hidden_report_accounts =
             sqlx::query_as::<_, (i64, bool)>("SELECT id, hide_from_reports FROM accounts")
@@ -290,8 +309,24 @@ impl Store {
         )
         .fetch_all(&mut *transaction)
         .await?;
+        let labels =
+            sqlx::query_as::<_, Label>("SELECT id, name FROM labels ORDER BY name_key, id")
+                .fetch_all(&mut *transaction)
+                .await?;
+        let mut entry_label_ids = HashMap::<i64, Vec<i64>>::new();
+        for (entry_id, label_id) in sqlx::query_as::<_, (i64, i64)>(
+            "SELECT el.entry_id, el.label_id
+             FROM entry_labels el
+             JOIN labels l ON l.id = el.label_id
+             ORDER BY el.entry_id, el.label_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        {
+            entry_label_ids.entry(entry_id).or_default().push(label_id);
+        }
         let entries = sqlx::query_as::<_, ReportEntry>(
-            "SELECT account_id, category_id, name, kind, amount_minor, occurred_at
+            "SELECT id, account_id, category_id, name, kind, amount_minor, occurred_at
              FROM entries
              WHERE kind IN ('income', 'expense')",
         )
@@ -301,6 +336,8 @@ impl Store {
         Ok(ReportSnapshot {
             hidden_report_accounts,
             categories,
+            labels,
+            entry_label_ids,
             entries,
         })
     }
@@ -503,6 +540,131 @@ impl Store {
             },
             income_items,
             expense_items,
+            invalid_date_entry_count: checked_i64(
+                invalid_date_entry_count,
+                "invalid-date entry count",
+            )?,
+        })
+    }
+
+    pub async fn label_report(&self, month: &str) -> AppResult<LabelReport> {
+        let ReportMonths {
+            month,
+            current_start,
+            current_end,
+            ..
+        } = Self::report_months(month)?;
+        let ReportSnapshot {
+            hidden_report_accounts,
+            labels,
+            entry_label_ids,
+            entries,
+            ..
+        } = self.report_snapshot().await?;
+        let mut current = CategoryAmount::default();
+        let mut amounts = HashMap::<Option<i64>, LabelAmount>::new();
+        amounts.insert(None, LabelAmount::default());
+        for label in &labels {
+            amounts.insert(Some(label.id), LabelAmount::default());
+        }
+        let mut invalid_date_entry_count = 0_i128;
+
+        for entry in entries {
+            if hidden_report_accounts.contains(&entry.account_id) {
+                continue;
+            }
+            let Some(date) = date_only(&entry.occurred_at) else {
+                invalid_date_entry_count += 1;
+                continue;
+            };
+            if date.as_str() < current_start.as_str() || date.as_str() >= current_end.as_str() {
+                continue;
+            }
+
+            // The overall report counts each posted entry once. Allocation is a
+            // separate additive partition of that same positive integer amount.
+            current.add(&entry.kind, entry.amount_minor);
+            let mut assigned = entry_label_ids.get(&entry.id).cloned().unwrap_or_default();
+            assigned.sort_unstable();
+            if assigned.is_empty() {
+                amounts
+                    .get_mut(&None)
+                    .expect("No Labels allocation row")
+                    .add(&entry.kind, i128::from(entry.amount_minor));
+                continue;
+            }
+
+            let label_count = assigned.len() as i128;
+            let amount_minor = i128::from(entry.amount_minor);
+            let equal_share = amount_minor / label_count;
+            let leftover = amount_minor % label_count;
+            for (index, label_id) in assigned.into_iter().enumerate() {
+                let share = equal_share + if (index as i128) < leftover { 1 } else { 0 };
+                amounts
+                    .get_mut(&Some(label_id))
+                    .expect("current label allocation row")
+                    .add(&entry.kind, share);
+            }
+        }
+
+        let allocated_income = amounts
+            .values()
+            .map(|amount| amount.income_minor)
+            .sum::<i128>();
+        let allocated_expense = amounts
+            .values()
+            .map(|amount| amount.expense_minor)
+            .sum::<i128>();
+        if allocated_income != current.income_minor || allocated_expense != current.expense_minor {
+            return Err(AppError::Conflict(
+                "label report allocation could not reconcile to report totals".to_string(),
+            ));
+        }
+
+        let current_period = ReportPeriod {
+            start_date: current_start,
+            end_date_exclusive: current_end,
+            income_minor: checked_i64(current.income_minor, "report income")?,
+            expense_minor: checked_i64(current.expense_minor, "report expense")?,
+            net_minor: checked_i64(
+                current.income_minor - current.expense_minor,
+                "report net earnings",
+            )?,
+            income_count: checked_i64(current.income_count, "report income count")?,
+            expense_count: checked_i64(current.expense_count, "report expense count")?,
+        };
+        let mut rows = Vec::with_capacity(labels.len() + 1);
+        for label in labels {
+            let amount = amounts.remove(&Some(label.id)).unwrap_or_default();
+            rows.push(LabelReportRow {
+                label_id: Some(label.id),
+                name: label.name,
+                is_no_labels: false,
+                income_minor: checked_i64(amount.income_minor, "report label income")?,
+                expense_minor: checked_i64(amount.expense_minor, "report label expense")?,
+                net_minor: checked_i64(
+                    amount.income_minor - amount.expense_minor,
+                    "report label net earnings",
+                )?,
+            });
+        }
+        let no_labels = amounts.remove(&None).unwrap_or_default();
+        rows.push(LabelReportRow {
+            label_id: None,
+            name: "No Labels".to_string(),
+            is_no_labels: true,
+            income_minor: checked_i64(no_labels.income_minor, "report No Labels income")?,
+            expense_minor: checked_i64(no_labels.expense_minor, "report No Labels expense")?,
+            net_minor: checked_i64(
+                no_labels.income_minor - no_labels.expense_minor,
+                "report No Labels net earnings",
+            )?,
+        });
+
+        Ok(LabelReport {
+            month: month.to_string(),
+            current: current_period,
+            rows,
             invalid_date_entry_count: checked_i64(
                 invalid_date_entry_count,
                 "invalid-date entry count",

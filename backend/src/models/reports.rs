@@ -13,6 +13,11 @@ pub struct ItemsSummaryReportQuery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct LabelReportQuery {
+    pub month: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct DailySummaryReportQuery {
     pub anchor_date: String,
 }
@@ -100,6 +105,28 @@ pub struct ItemsSummaryReport {
     pub current: ReportPeriod,
     pub income_items: Vec<ReportItem>,
     pub expense_items: Vec<ReportItem>,
+    pub invalid_date_entry_count: i64,
+}
+
+/// One additive allocation row. `label_id: null` plus `is_no_labels: true`
+/// identifies the synthetic bucket, even when a user label is named "No Labels".
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelReportRow {
+    pub label_id: Option<i64>,
+    pub name: String,
+    pub is_no_labels: bool,
+    pub income_minor: i64,
+    pub expense_minor: i64,
+    pub net_minor: i64,
+}
+
+/// Selected-month income and expense allocation across current labels and
+/// No Labels. Every eligible posted entry contributes its paise exactly once.
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelReport {
+    pub month: String,
+    pub current: ReportPeriod,
+    pub rows: Vec<LabelReportRow>,
     pub invalid_date_entry_count: i64,
 }
 

@@ -107,6 +107,22 @@ export interface ItemsSummaryReport {
   invalid_date_entry_count: number;
 }
 
+export interface LabelReportRow {
+  label_id: number | null;
+  name: string;
+  is_no_labels: boolean;
+  income_minor: number;
+  expense_minor: number;
+  net_minor: number;
+}
+
+export interface LabelReport {
+  month: string;
+  current: ReportPeriod;
+  rows: LabelReportRow[];
+  invalid_date_entry_count: number;
+}
+
 export interface DailySpending {
   date: string;
   expense_minor: number;
