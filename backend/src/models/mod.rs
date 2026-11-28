@@ -1,5 +1,6 @@
 mod accounts;
 mod assistant;
+mod assistant_usage;
 mod budgets;
 mod categories;
 mod common;
@@ -17,6 +18,7 @@ mod transfers;
 
 pub use accounts::*;
 pub use assistant::*;
+pub use assistant_usage::*;
 pub use budgets::*;
 pub use categories::*;
 pub use common::*;

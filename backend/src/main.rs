@@ -16,6 +16,7 @@ use app::{build_router_with, IdentityConfig};
 use assistant::AssistantClient;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
+use store::Store;
 
 /// Load a small allowlist from `.env` in the backend working directory.
 /// Values already present in the process environment win, and no other file
@@ -71,13 +72,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
 
+    let port = std::env::var("PAISA_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(3000);
+    let store = Store::new(pool.clone());
     let app = build_router_with(
         pool,
         IdentityConfig::from_env(),
-        AssistantClient::from_env(),
+        AssistantClient::from_env(store),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
-    tracing::info!("budget API listening on http://127.0.0.1:3000");
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    tracing::info!(port, "budget API listening");
     axum::serve(listener, app).await?;
     Ok(())
 }

@@ -438,6 +438,25 @@ export interface SaveReceipt {
   created_at: string;
 }
 
+export interface AssistantUsageDay {
+  date: string;
+  total_cost_usd: string;
+  completed_count: number;
+  reported_count: number;
+  zero_cost_count: number;
+  missing_cost_count: number;
+}
+
+export interface AssistantUsageSummary {
+  member_id: number;
+  total_cost_usd: string;
+  completed_count: number;
+  reported_count: number;
+  zero_cost_count: number;
+  missing_cost_count: number;
+  days: AssistantUsageDay[];
+}
+
 export interface OkResponse {
   ok: true;
 }

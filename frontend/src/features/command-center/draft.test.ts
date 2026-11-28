@@ -6,6 +6,7 @@ import {
   blankDraftRow,
   formatAmount,
   formatGroupDate,
+  formatUsd,
   groupRowsByDate,
   hasUnresolvedAccount,
   isReadyToSave,
@@ -154,6 +155,14 @@ describe("review and receipt helpers", () => {
         blankDraftRow("new_account", 1, "2026-01-15", "new-1"),
       ]),
     ).toBe(false);
+  });
+
+  it("formats exact USD totals without floating-point rounding", () => {
+    expect(formatUsd("0.300000000000000001")).toBe("0.300000000000000001");
+    expect(formatUsd("0.000000000000000001")).toBe("0.000000000000000001");
+    expect(formatUsd("10.000")).toBe("10");
+    expect(formatUsd("0")).toBe("0");
+    expect(formatUsd("not-a-cost")).toBe("Unavailable");
   });
 
   it("summarizes receipt ids as counts", () => {

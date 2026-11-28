@@ -199,6 +199,7 @@ impl Store {
 }
 
 mod accounts;
+mod assistant_usage;
 mod budget_rules;
 mod budgets;
 mod categories;

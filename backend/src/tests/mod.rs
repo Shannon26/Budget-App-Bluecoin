@@ -302,6 +302,7 @@ fn budget_row(body: &Value, category_id: i64) -> &Value {
 
 mod accounts;
 mod assistant;
+mod assistant_usage;
 mod budgets;
 mod categories;
 mod command_center;

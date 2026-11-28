@@ -114,6 +114,69 @@ async fn manual_batch_creates_account_and_entries_with_a_repeatable_receipt() {
 }
 
 #[tokio::test]
+async fn discard_does_not_reuse_receipts_from_a_previous_draft() {
+    let (app, _pool, _directory) = setup().await;
+    let account = create_account(&app, "Cash", 10000).await;
+    add_row(
+        &app,
+        expense_row("first-1", "First lunch", 100, Value::Number(account.into())),
+    )
+    .await;
+    let first_draft = draft(&app).await;
+    let first_revision = first_draft["revision"].as_i64().unwrap();
+    let (status, first_receipt) = send_json(
+        &app,
+        "POST",
+        "/api/draft/save",
+        json!({ "revision": first_revision }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first_receipt}");
+
+    let (status, _) = send_json(&app, "POST", "/api/draft/discard", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let fresh = draft(&app).await;
+    assert!(fresh["revision"].as_i64().unwrap() > first_revision);
+
+    // The original receipt remains replayable after discard.
+    let (status, retried) = send_json(
+        &app,
+        "POST",
+        "/api/draft/save",
+        json!({ "revision": first_revision }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert_eq!(retried, first_receipt);
+
+    add_row(
+        &app,
+        expense_row(
+            "second-1",
+            "Second lunch",
+            200,
+            Value::Number(account.into()),
+        ),
+    )
+    .await;
+    let second_draft = draft(&app).await;
+    let (status, second_receipt) = send_json(
+        &app,
+        "POST",
+        "/api/draft/save",
+        json!({ "revision": second_draft["revision"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second_receipt}");
+    assert_ne!(second_receipt, first_receipt);
+    assert_ne!(
+        second_receipt["entry_ids"], first_receipt["entry_ids"],
+        "a new draft must post a new entry instead of replaying the old receipt"
+    );
+    assert_eq!(state(&app).await["totals"]["expense_minor"], 300);
+}
+
+#[tokio::test]
 async fn unresolved_rows_and_stale_revisions_cannot_save() {
     let (app, _pool, _directory) = setup().await;
     let account = create_account(&app, "Cash", 10000).await;

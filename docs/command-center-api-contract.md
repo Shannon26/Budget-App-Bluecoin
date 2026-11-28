@@ -56,7 +56,16 @@ OkResponse { ok: true }
 AssistantRequest { text, local_date, rows: DraftRow[], account_names: {id,name}[],
                    category_names: {id,name,kind}[] }
 AssistantProposal { rows: DraftRow[], edits: {row_id, row: DraftRow}[], message, clarification? }
+
+AssistantUsageDay { date, total_cost_usd, completed_count, reported_count,
+                    zero_cost_count, missing_cost_count }
+AssistantUsageSummary { member_id, total_cost_usd, completed_count, reported_count,
+                        zero_cost_count, missing_cost_count, days: AssistantUsageDay[] }
 ```
+
+All usage cost fields are exact decimal strings in USD. `reported_count` includes explicit zero;
+`missing_cost_count` counts completed responses without a usable reported cost. See
+[`command-center-openrouter.md`](command-center-openrouter.md) for routing and accounting rules.
 
 ### Transfer requests
 
@@ -90,6 +99,7 @@ AssignmentProposals/Confirmations { proposals|assignments: {account_id, owner_me
 | Method | Path | Response |
 | --- | --- | --- |
 | GET | `/draft` | `Draft` |
+| GET | `/assistant/usage` | `AssistantUsageSummary` (resolved member only; read-only) |
 | POST | `/draft/prompt` | `DraftResponse` |
 | POST | `/draft/rows` | `Draft` |
 | PUT | `/draft/rows/:row_id` | `Draft` |

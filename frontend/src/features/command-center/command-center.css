@@ -95,6 +95,60 @@
   font-size: 10px;
 }
 
+.cc-cost-history {
+  padding: 14px 18px;
+  border: 1px solid rgba(23, 63, 53, 0.1);
+  border-radius: 14px;
+  background: var(--paper);
+  font-size: 12px;
+}
+
+.cc-cost-history summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.cc-cost-history summary strong {
+  color: #245d49;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-cost-history-body {
+  padding-top: 12px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.cc-cost-history-body p {
+  margin: 6px 0;
+}
+
+.cc-cost-history-body ul {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cc-cost-history-body li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #e3e7dd;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-cost-history-body li small {
+  grid-column: 1 / -1;
+  color: #8b978f;
+}
+
 .cc-inline-error,
 .cc-inline-notice {
   padding: 12px 15px;

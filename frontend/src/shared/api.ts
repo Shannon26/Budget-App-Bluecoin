@@ -3,6 +3,7 @@ import type {
   AccountUpdate,
   AssignmentSelection,
   AssignmentView,
+  AssistantUsageSummary,
   BalanceSheetReport,
   BudgetState,
   Category,
@@ -310,6 +311,7 @@ export const api = {
 
   // Command Center: private drafts and reviewed batch save.
   draft: () => request<Draft>("/draft"),
+  assistantUsage: () => request<AssistantUsageSummary>("/assistant/usage"),
   appendPrompt: (text: string, clientPromptId: string, localDate?: string) =>
     request<DraftResponse>("/draft/prompt", {
       method: "POST",

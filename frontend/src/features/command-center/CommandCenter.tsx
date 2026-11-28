@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { localDateValue } from "../../shared/date";
 import type {
+  AssistantUsageSummary,
   BudgetState,
   Draft,
   DraftRow,
@@ -12,7 +13,7 @@ import AccountsView from "./AccountsView";
 import Receipt from "./Receipt";
 import Review from "./Review";
 import TransferReview from "./TransferReview";
-import { blankDraftRow, newLocalRowId, nextOrdinal, ownPrompts } from "./draft";
+import { blankDraftRow, formatUsd, newLocalRowId, nextOrdinal, ownPrompts } from "./draft";
 
 export type CommandScreen = "command-center" | "review" | "transfer-review" | "accounts";
 
@@ -63,6 +64,8 @@ export default function CommandCenter({
   const [receipt, setReceipt] = useState<SaveReceipt | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
   const [incomingCount, setIncomingCount] = useState(0);
+  const [usage, setUsage] = useState<AssistantUsageSummary | null>(null);
+  const [usageUnavailable, setUsageUnavailable] = useState(false);
 
   useEffect(() => {
     let current = true;
@@ -84,6 +87,19 @@ export default function CommandCenter({
       current = false;
     };
   }, []);
+
+  const loadUsage = useCallback(async () => {
+    try {
+      setUsage(await api.assistantUsage());
+      setUsageUnavailable(false);
+    } catch {
+      setUsageUnavailable(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadUsage();
+  }, [loadUsage]);
 
   const loadRequestCount = useCallback(async () => {
     try {
@@ -133,9 +149,10 @@ export default function CommandCenter({
         return false;
       } finally {
         setBusy(false);
+        void loadUsage();
       }
     },
-    [applyDraft, busy, draft.local_date, onMessage, onScreen],
+    [applyDraft, busy, draft.local_date, loadUsage, onMessage, onScreen],
   );
 
   const addRow = useCallback(
@@ -460,6 +477,45 @@ export default function CommandCenter({
       {draftUnavailable && (
         <p className="cc-field-hint">Saved drafts are unavailable; you can still add rows manually.</p>
       )}
+
+      <details className="cc-cost-history" data-testid="cc-cost-history">
+        <summary>
+          <span>Assistant cost history</span>
+          <strong data-testid="cc-cost-total">
+            {usage ? `${formatUsd(usage.total_cost_usd)} USD` : "—"}
+          </strong>
+        </summary>
+        <div className="cc-cost-history-body">
+          {usageUnavailable ? (
+            <p>Cost history is unavailable.</p>
+          ) : !usage ? (
+            <p>Loading reported assistant cost…</p>
+          ) : usage.completed_count === 0 ? (
+            <p>No reported assistant usage yet.</p>
+          ) : (
+            <>
+              <p>
+                {usage.completed_count} response{usage.completed_count === 1 ? "" : "s"} ·{" "}
+                {usage.reported_count} cost{usage.reported_count === 1 ? "" : "s"} reported ·{" "}
+                {usage.zero_cost_count} zero-cost · {usage.missing_cost_count} missing
+              </p>
+              <ul>
+                {[...usage.days].reverse().map((day) => (
+                  <li key={day.date}>
+                    <time dateTime={day.date}>{day.date}</time>
+                    <span>{formatUsd(day.total_cost_usd)} USD</span>
+                    <small>
+                      {day.reported_count} reported · {day.zero_cost_count} zero ·{" "}
+                      {day.missing_cost_count} missing
+                    </small>
+                  </li>
+                ))}
+              </ul>
+              <p>Actual cost reported by OpenRouter. Missing costs are never estimated.</p>
+            </>
+          )}
+        </div>
+      </details>
 
       <div className="cc-secondary-links">
         <button type="button" className="text-button" onClick={() => onScreen("accounts")}>

@@ -123,6 +123,10 @@ pub(crate) fn build_router_with(
     Router::new()
         .route("/api/health", get(routes::system::health))
         .route("/api/state", get(routes::system::get_state))
+        .route(
+            "/api/assistant/usage",
+            get(routes::assistant_usage::usage_summary),
+        )
         .route("/api/accounts", post(routes::accounts::create_account))
         .route(
             "/api/accounts/:id/history",

@@ -167,3 +167,11 @@ export function receiptCounts(receipt: SaveReceipt) {
     pending: receipt.pending_request_ids.length,
   };
 }
+
+/** Preserve every reported USD decimal digit; never round through Number. */
+export function formatUsd(value: string): string {
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return "Unavailable";
+  const [whole, fraction = ""] = value.split(".");
+  const significant = fraction.replace(/0+$/, "");
+  return significant ? `${whole}.${significant}` : whole;
+}

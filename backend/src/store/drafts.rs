@@ -554,10 +554,17 @@ impl Store {
             .bind(member_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM drafts WHERE member_id = ?")
-            .bind(member_id)
-            .execute(&mut *tx)
-            .await?;
+        // Keep the revision monotonic. Save receipts are keyed by member and
+        // revision and intentionally survive draft clearance, so resetting the
+        // draft to revision zero would let a later draft replay an old receipt.
+        sqlx::query(
+            "UPDATE drafts SET revision = revision + 1, local_date = ?, updated_at = ? WHERE member_id = ?",
+        )
+        .bind(today_string())
+        .bind(now_string())
+        .bind(member_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }

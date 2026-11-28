@@ -108,8 +108,15 @@ activity into reviewed ledger entries with one Save. See
   edited directly; corrections use an approved reversal in the opposite direction.
 - **Assistant** — `backend/src/assistant.rs` sends only the submitted text, local date, unsaved
   rows, and a small allowlist of relevant account/category names. It never reads ledger history or
-  balances. Without a key the assistant is disabled and manual capture still works;
-  `PAISA_ASSISTANT_MODE=stub` provides deterministic offline pragmas for tests.
+  balances. The default route is `deepseek/deepseek-v4.1-flash-1017` pinned to the
+  `sail-research/fp4` endpoint with fallbacks disabled and strict JSON Schema required. No app or
+  analytics attribution headers/metadata are sent. Without a key the assistant is disabled and
+  manual capture still works; `PAISA_ASSISTANT_MODE=stub` provides deterministic offline pragmas
+  for tests.
+- **Assistant cost history** — Command Center has a collapsed read-only total and per-day history
+  sourced only from OpenRouter's actual reported `usage.cost` in USD. Costs use exact decimal
+  strings, distinguish reported zero from missing cost, and are scoped to the signed-in member.
+  See [`docs/command-center-openrouter.md`](docs/command-center-openrouter.md).
 
 ### Household identity configuration
 
@@ -124,8 +131,9 @@ allowlisted set of these keys from Git-ignored `backend/.env`; process environme
 | `PAISA_MEMBER_TOKEN` | Shared token required in `x-paisa-member-token`. |
 | `PAISA_DEFAULT_MEMBER_ID` | Fallback member while household mode is off (default `1`). |
 | `OPENROUTER_API_KEY` | Optional assistant key; kept only in Git-ignored `backend/.env`. |
-| `OPENROUTER_MODEL`, `OPENROUTER_URL` | Optional model/endpoint overrides. |
+| `OPENROUTER_MODEL`, `OPENROUTER_URL` | Optional deployment model/endpoint overrides; defaults are the pinned DeepSeek route above. |
 | `PAISA_ASSISTANT_MODE` | `stub` for offline deterministic proposals; `off` disables. |
+| `PAISA_PORT` | Optional API port for isolated runs; defaults to `3000`. |
 
 The frontend sends `x-paisa-member` and `x-paisa-member-token` only when
 `VITE_PAISA_HOUSEHOLD_ENABLED === "true"`; member id and token come from browser storage.
@@ -251,6 +259,7 @@ All amounts are integer minor units.
 | `GET/POST` | `/api/filters` | List/create named filters |
 | `PUT/DELETE` | `/api/filters/:id` | Update/delete named filter |
 | `GET` | `/api/draft` | Current private draft with rows, prompts, and revision |
+| `GET` | `/api/assistant/usage` | Member-scoped exact reported USD total and per-day assistant cost history |
 | `POST` | `/api/draft/prompt` | Append a prompt and apply an assistant proposal |
 | `POST/PUT/DELETE` | `/api/draft/rows` or `/api/draft/rows/:row_id` | Edit draft rows manually |
 | `POST` | `/api/draft/rows/assign-account` | Assign one account to selected rows |

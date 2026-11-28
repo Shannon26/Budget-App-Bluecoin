@@ -37,7 +37,12 @@ pub(crate) async fn append_prompt(
         category_names,
     };
 
-    let Some(mut proposal) = state.assistant.prepare(request).await.ok() else {
+    let Some(mut proposal) = state
+        .assistant
+        .prepare(request, member.0, &body.client_prompt_id)
+        .await
+        .ok()
+    else {
         return Ok(Json(DraftResponse {
             draft,
             message: Some(
